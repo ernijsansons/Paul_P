@@ -51,7 +51,7 @@ SYSTEM_NAME = "Paul P"
 [[d1_databases]]
 binding = "DB"
 database_name = "paul-p-primary"
-database_id = "REPLACE_WITH_PRIMARY_DB_ID"  # Get from: wrangler d1 create paul-p-primary
+database_id = "61070009-601d-4afd-81a5-8a593ec7f6a6"
 migrations_dir = "migrations"
 
 # Run: wrangler d1 create paul-p-anchor
@@ -59,7 +59,7 @@ migrations_dir = "migrations"
 [[d1_databases]]
 binding = "DB_ANCHOR"
 database_name = "paul-p-anchor"
-database_id = "REPLACE_WITH_ANCHOR_DB_ID"  # Get from: wrangler d1 create paul-p-anchor
+database_id = "bcf2cae2-cd50-4a07-bda0-455f0fd2e5e2"
 
 # ========== R2 BUCKETS ==========
 # Run: wrangler r2 bucket create paul-p-audit
@@ -77,7 +77,7 @@ bucket_name = "paul-p-evidence"
 # Then copy the id from output
 [[kv_namespaces]]
 binding = "KV_CACHE"
-id = "REPLACE_WITH_KV_CACHE_ID"  # Get from: wrangler kv:namespace create KV_CACHE
+id = "62253644abcf4ce78558fbd764b366fb"
 
 # ========== QUEUES ==========
 
