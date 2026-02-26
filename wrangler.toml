@@ -1,0 +1,241 @@
+# ============================================================
+# PAUL P - Cloudflare Workers Configuration
+# ============================================================
+# Before deploying, create the required resources:
+#
+# 1. Create D1 databases:
+#    wrangler d1 create paul-p-primary
+#    wrangler d1 create paul-p-anchor
+#    Then update database_id values below with returned IDs.
+#
+# 2. Create R2 buckets:
+#    wrangler r2 bucket create paul-p-audit
+#    wrangler r2 bucket create paul-p-evidence
+#
+# 3. Create KV namespace:
+#    wrangler kv:namespace create KV_CACHE
+#    Then update id value below with returned ID.
+#
+# 4. Create queues:
+#    wrangler queues create paul-p-ingestion
+#    wrangler queues create paul-p-signals
+#    wrangler queues create paul-p-orders
+#    wrangler queues create paul-p-pairing
+#
+# 5. Run migrations:
+#    wrangler d1 migrations apply paul-p-primary
+#
+# 6. Set secrets (required):
+#    wrangler secret put KALSHI_API_KEY
+#    wrangler secret put KALSHI_PRIVATE_KEY
+#    wrangler secret put ANTHROPIC_API_KEY
+#
+#    Optional:
+#    wrangler secret put IBKR_USERNAME
+#    wrangler secret put IBKR_PASSWORD
+#    wrangler secret put ADMIN_TOKEN  (for admin routes auth)
+# ============================================================
+
+name = "paul-p"
+main = "src/index.ts"
+compatibility_date = "2026-02-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+SYSTEM_NAME = "Paul P"
+
+# ========== D1 DATABASES ==========
+# Run: wrangler d1 create paul-p-primary
+# Then copy the database_id from output
+[[d1_databases]]
+binding = "DB"
+database_name = "paul-p-primary"
+database_id = "REPLACE_WITH_PRIMARY_DB_ID"  # Get from: wrangler d1 create paul-p-primary
+migrations_dir = "migrations"
+
+# Run: wrangler d1 create paul-p-anchor
+# Separate DB for audit chain integrity (write-only from AuditReporterAgent)
+[[d1_databases]]
+binding = "DB_ANCHOR"
+database_name = "paul-p-anchor"
+database_id = "REPLACE_WITH_ANCHOR_DB_ID"  # Get from: wrangler d1 create paul-p-anchor
+
+# ========== R2 BUCKETS ==========
+# Run: wrangler r2 bucket create paul-p-audit
+[[r2_buckets]]
+binding = "R2_AUDIT"
+bucket_name = "paul-p-audit"
+
+# Run: wrangler r2 bucket create paul-p-evidence
+[[r2_buckets]]
+binding = "R2_EVIDENCE"
+bucket_name = "paul-p-evidence"
+
+# ========== KV NAMESPACES ==========
+# Run: wrangler kv:namespace create KV_CACHE
+# Then copy the id from output
+[[kv_namespaces]]
+binding = "KV_CACHE"
+id = "REPLACE_WITH_KV_CACHE_ID"  # Get from: wrangler kv:namespace create KV_CACHE
+
+# ========== QUEUES ==========
+
+# Ingestion Queue Producer
+[[queues.producers]]
+binding = "QUEUE_INGESTION"
+queue = "paul-p-ingestion"
+
+# Signals Queue Producer
+[[queues.producers]]
+binding = "QUEUE_SIGNALS"
+queue = "paul-p-signals"
+
+# Orders Queue Producer
+[[queues.producers]]
+binding = "QUEUE_ORDERS"
+queue = "paul-p-orders"
+
+# Pairing Queue Producer
+[[queues.producers]]
+binding = "QUEUE_PAIRING"
+queue = "paul-p-pairing"
+
+# Ingestion Queue Consumer
+[[queues.consumers]]
+queue = "paul-p-ingestion"
+max_batch_size = 50
+max_batch_timeout = 30
+
+# Signals Queue Consumer
+[[queues.consumers]]
+queue = "paul-p-signals"
+max_batch_size = 10
+max_batch_timeout = 5
+
+# Orders Queue Consumer (single order at a time for safety)
+[[queues.consumers]]
+queue = "paul-p-orders"
+max_batch_size = 1
+max_batch_timeout = 0
+
+# Pairing Queue Consumer
+[[queues.consumers]]
+queue = "paul-p-pairing"
+max_batch_size = 5
+max_batch_timeout = 60
+
+# ========== DURABLE OBJECTS ==========
+
+# Top-level orchestrator
+[[durable_objects.bindings]]
+name = "PAUL_P_ORCHESTRATOR"
+class_name = "PaulPOrchestrator"
+
+# Research Agent - market canonicalization, LLM governance, ambiguity scoring
+[[durable_objects.bindings]]
+name = "RESEARCH_AGENT"
+class_name = "ResearchAgent"
+
+# Market Data Agent - data ingestion, evidence storage, VPIN
+[[durable_objects.bindings]]
+name = "MARKET_DATA_AGENT"
+class_name = "MarketDataAgent"
+
+# Strategy Agents
+[[durable_objects.bindings]]
+name = "STRATEGY_BONDING"
+class_name = "StrategyBondingAgent"
+
+[[durable_objects.bindings]]
+name = "STRATEGY_WEATHER"
+class_name = "StrategyWeatherAgent"
+
+[[durable_objects.bindings]]
+name = "STRATEGY_XVSIGNAL"
+class_name = "StrategyXVSignalAgent"
+
+[[durable_objects.bindings]]
+name = "STRATEGY_SMARTMONEY"
+class_name = "StrategySmartMoneyAgent"
+
+[[durable_objects.bindings]]
+name = "STRATEGY_RESOLUTION"
+class_name = "StrategyResolutionAgent"
+
+# Risk Governor - 17 invariants, circuit breaker, Event Graph correlation
+[[durable_objects.bindings]]
+name = "RISK_GOVERNOR"
+class_name = "RiskGovernorAgent"
+
+# Execution Agents
+[[durable_objects.bindings]]
+name = "KALSHI_EXEC"
+class_name = "KalshiExecAgent"
+
+[[durable_objects.bindings]]
+name = "IBKR_EXEC"
+class_name = "IBKRExecAgent"
+
+# Support Agents
+[[durable_objects.bindings]]
+name = "RECONCILIATION"
+class_name = "ReconciliationAgent"
+
+[[durable_objects.bindings]]
+name = "AUDIT_REPORTER"
+class_name = "AuditReporterAgent"
+
+[[durable_objects.bindings]]
+name = "COMPLIANCE"
+class_name = "ComplianceAgent"
+
+# Durable Object migrations
+[[migrations]]
+tag = "v1"
+new_classes = [
+  "PaulPOrchestrator",
+  "ResearchAgent",
+  "MarketDataAgent",
+  "StrategyBondingAgent",
+  "StrategyWeatherAgent",
+  "StrategyXVSignalAgent",
+  "StrategySmartMoneyAgent",
+  "StrategyResolutionAgent",
+  "RiskGovernorAgent",
+  "KalshiExecAgent",
+  "IBKRExecAgent",
+  "ReconciliationAgent",
+  "AuditReporterAgent",
+  "ComplianceAgent"
+]
+
+# Workers AI
+[ai]
+binding = "AI"
+
+# Vectorize for embeddings
+# [[vectorize]]
+# binding = "VECTORIZE"
+# index_name = "paul-p-embeddings"
+
+# Cron Triggers
+[triggers]
+crons = [
+  "*/15 * * * *",   # Every 15 min: data ingestion
+  "*/5 * * * *",    # Every 5 min: reconciliation
+  "*/10 * * * *",   # Every 10 min: signal scan
+  "2,12,22,32,42,52 * * * *",  # Every 10 min (offset by 2): signal execute
+  "0 * * * *",      # Hourly: audit chain anchor
+  "0 23 * * *",     # Daily at 11 PM UTC: daily report
+  "0 3 * * *"       # Daily at 3 AM UTC: LLM drift sweep
+]
+
+# Development settings
+[dev]
+port = 8787
+local_protocol = "http"
+
+# Observability
+# [observability]
+# enabled = true

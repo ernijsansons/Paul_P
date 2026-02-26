@@ -1,0 +1,54 @@
+{
+  "strategy_id": "weather-econ-series-v1",
+  "version": "1.0.0",
+  "description": "Statistical modeling of Kalshi weather and economic data series",
+  "allowed_market_classes": ["weather", "economic"],
+  "series_tickers": ["KXHIGHNY", "KXJOBLESS", "KXCPI", "KXGDP", "KXPAYROLL"],
+  "required_features": ["kalshi_price", "noaa_forecast", "fred_data"],
+  "min_data_freshness_sec": 600,
+  "execution_policy": "weather_limit",
+  "entry_criteria": {
+    "min_model_edge": 0.05,
+    "min_confidence": 0.90,
+    "bonferroni_adjusted": true,
+    "min_hours_to_settlement": 24
+  },
+  "risk_limits": {
+    "max_position_pct": 0.02,
+    "max_series_exposure_pct": 0.10,
+    "max_daily_loss_pct": 0.02
+  },
+  "model": {
+    "type": "logistic_regression",
+    "walk_forward_window_months": 6,
+    "validation_window_months": 1,
+    "retrain_frequency": "weekly",
+    "lookback_years": 10
+  },
+  "data_sources": {
+    "weather": {
+      "provider": "noaa_cdo",
+      "stations": {
+        "NYC": "GHCND:USW00094728",
+        "LAX": "GHCND:USW00023174",
+        "ORD": "GHCND:USW00094846"
+      }
+    },
+    "economic": {
+      "provider": "fred",
+      "series": ["UNRATE", "CPIAUCSL", "GDP"]
+    }
+  },
+  "backtest": {
+    "methodology": "walk_forward_temporal",
+    "min_history_months": 12,
+    "min_oos_accuracy": 0.55,
+    "max_calibration_error": 0.10
+  },
+  "kill_criteria": {
+    "oos_accuracy_below": 0.52,
+    "mean_edge_below": 0.02,
+    "calibration_error_above": 0.15
+  },
+  "approval_required_for_changes": true
+}

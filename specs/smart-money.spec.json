@@ -1,0 +1,49 @@
+{
+  "strategy_id": "smart-money-v1",
+  "version": "1.0.0",
+  "description": "Smart money convergence - aggregate high-skill account positions from Polymarket",
+  "allowed_market_classes": ["political", "sports", "crypto", "weather"],
+  "required_features": ["polymarket_positions", "skill_scores", "market_pair_approved"],
+  "min_data_freshness_sec": 300,
+  "execution_policy": "smartmoney_passive",
+  "entry_criteria": {
+    "min_converging_accounts": 3,
+    "min_account_skill_score": 70,
+    "min_aggregate_position_size_usd": 10000,
+    "market_pair_status_required": "approved",
+    "convergence_window_hours": 24
+  },
+  "skill_scoring": {
+    "method": "8_factor_rubric",
+    "factors": [
+      "roi_percentile",
+      "sharpe_ratio",
+      "win_rate",
+      "avg_position_size",
+      "market_diversity",
+      "timing_skill",
+      "clv_average",
+      "account_age_months"
+    ],
+    "min_resolved_positions": 20,
+    "min_account_age_days": 30
+  },
+  "risk_limits": {
+    "max_position_pct": 0.02,
+    "max_smart_money_exposure_pct": 0.10,
+    "max_daily_loss_pct": 0.02,
+    "max_single_account_reliance_pct": 0.30
+  },
+  "backtest": {
+    "methodology": "temporal_split_60_20_20",
+    "min_signal_count": 50,
+    "min_win_rate": 0.55,
+    "min_roi": 0.05
+  },
+  "kill_criteria": {
+    "win_rate_below": 0.52,
+    "frontrunning_detected": true,
+    "skill_score_degradation_above": 0.20
+  },
+  "approval_required_for_changes": true
+}

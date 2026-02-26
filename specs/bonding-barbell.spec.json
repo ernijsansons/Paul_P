@@ -1,0 +1,49 @@
+{
+  "strategy_id": "bonding-barbell-v1",
+  "version": "1.0.0",
+  "description": "High-probability bonding (>93% YES) with anti-bonding barbell for tail risk",
+  "allowed_market_classes": ["political", "sports", "crypto", "weather", "mentions"],
+  "disallowed_markets": {
+    "ambiguity_score_above": 0.5,
+    "has_active_dispute": true
+  },
+  "required_features": ["kalshi_yes_price", "kalshi_no_price", "ambiguity_score"],
+  "min_data_freshness_sec": 300,
+  "execution_policy": "bonding_passive",
+  "entry_criteria": {
+    "bond_min_probability": 0.93,
+    "bond_max_probability": 0.99,
+    "tail_max_price": 0.07,
+    "min_liquidity_usd": 5000,
+    "max_spread": 0.10
+  },
+  "risk_limits": {
+    "max_position_pct": 0.03,
+    "max_event_cluster_pct": 0.15,
+    "bond_allocation_pct": 0.90,
+    "tail_allocation_pct": 0.10,
+    "tail_herfindahl_max": 0.3,
+    "min_event_hedge_allocation": 0.30,
+    "max_daily_loss_pct": 0.03
+  },
+  "tail_types": ["event_hedge", "regime_tail", "diversifier"],
+  "sizing": {
+    "method": "kelly",
+    "kelly_fraction": 0.25,
+    "monte_carlo_cv_adjustment": true
+  },
+  "backtest": {
+    "methodology": "temporal_split_60_20_20",
+    "primary_dataset": "kalshi_resolved",
+    "auxiliary_dataset": "polymarket_resolved",
+    "min_oos_sharpe": 1.5,
+    "max_oos_drawdown": 0.20,
+    "min_positions": 50
+  },
+  "kill_criteria": {
+    "oos_sharpe_below": 0.5,
+    "drawdown_above": 0.15,
+    "win_rate_below": 0.80
+  },
+  "approval_required_for_changes": true
+}

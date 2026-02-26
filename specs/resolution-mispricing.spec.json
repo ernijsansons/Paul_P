@@ -1,0 +1,50 @@
+{
+  "strategy_id": "resolution-mispricing-v1",
+  "version": "1.0.0",
+  "description": "LLM-assisted resolution criteria analysis for headline-vs-rule divergence",
+  "allowed_market_classes": ["political", "sports", "crypto"],
+  "required_features": ["resolution_criteria_text", "llm_ambiguity_score", "llm_rule_interpretation"],
+  "min_data_freshness_sec": 3600,
+  "execution_policy": "resolution_conservative",
+  "llm_governance": {
+    "required_prompt_version": "1.0.0",
+    "max_ambiguity_score": 0.4,
+    "require_human_review": true,
+    "require_cited_passages": true,
+    "regression_test_pass_rate": 0.90
+  },
+  "entry_criteria": {
+    "min_headline_rule_divergence": 0.10,
+    "min_edge_estimate": 0.05,
+    "min_llm_confidence": 0.70,
+    "human_approval_required": true
+  },
+  "risk_limits": {
+    "max_position_pct": 0.02,
+    "max_resolution_strategy_exposure_pct": 0.08,
+    "max_daily_loss_pct": 0.02
+  },
+  "excluded_conditions": {
+    "active_uma_dispute": true,
+    "platform_rule_change_pending": true,
+    "settlement_within_hours": 24
+  },
+  "llm_model": {
+    "provider": "anthropic",
+    "model_id": "claude-sonnet-4-20250514",
+    "temperature": 0.1,
+    "max_tokens": 2000
+  },
+  "backtest": {
+    "methodology": "historical_dispute_analysis",
+    "min_llm_accuracy_vs_human": 0.70,
+    "min_edge_realized": 0.03
+  },
+  "kill_criteria": {
+    "llm_false_positive_rate_above": 0.30,
+    "regression_test_fail_rate_above": 0.10,
+    "resolution_interpretation_error_above": 0.20,
+    "edge_below": 0.03
+  },
+  "approval_required_for_changes": true
+}

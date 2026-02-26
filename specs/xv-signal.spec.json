@@ -1,0 +1,45 @@
+{
+  "strategy_id": "xv-signal-v1",
+  "version": "1.0.0",
+  "description": "Cross-venue signal following - Polymarket intelligence to Kalshi execution",
+  "allowed_market_classes": ["political", "sports", "crypto"],
+  "required_features": ["polymarket_price", "kalshi_price", "market_pair_approved"],
+  "min_data_freshness_sec": 60,
+  "execution_policy": "xvsignal_aggressive",
+  "entry_criteria": {
+    "min_price_divergence": 0.05,
+    "equivalence_grade_required": ["identical", "near_equivalent"],
+    "market_pair_status_required": "approved",
+    "human_approval_required": true
+  },
+  "risk_limits": {
+    "max_position_pct": 0.03,
+    "max_total_xv_exposure_pct": 0.15,
+    "max_holding_period_hours": 24,
+    "max_daily_loss_pct": 0.02
+  },
+  "pre_trade_checks": {
+    "max_kalshi_spread": 0.08,
+    "min_kalshi_depth_usd": 100,
+    "max_vpin": 0.6,
+    "max_price_move_since_signal": 0.05
+  },
+  "convergence_model": {
+    "expected_convergence_hours": 12,
+    "exit_on_convergence": true,
+    "exit_on_divergence_increase": 0.10
+  },
+  "backtest": {
+    "methodology": "temporal_split_60_20_20",
+    "min_convergence_rate": 0.55,
+    "min_mean_return": 0.03,
+    "min_signal_count": 30
+  },
+  "kill_criteria": {
+    "win_rate_below": 0.50,
+    "mean_return_below": 0.02,
+    "slippage_above_edge_pct": 0.50,
+    "resolution_divergence_in_approved_pair": true
+  },
+  "approval_required_for_changes": true
+}

@@ -1,0 +1,32 @@
+{
+  "name": "paul-p",
+  "version": "1.0.0",
+  "description": "Paul P - Autonomous Prediction Market Trading System",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node ./scripts/run-vitest.cjs run",
+    "test:watch": "node ./scripts/run-vitest.cjs",
+    "test:coverage": "node ./scripts/run-vitest.cjs run --coverage",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "wrangler d1 migrations apply paul-p-primary",
+    "db:migrate:anchor": "wrangler d1 migrations apply paul-p-anchor",
+    "lint": "tsc --noEmit",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "agents": "^0.6.0",
+    "drizzle-orm": "^0.38.0",
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.0",
+    "@cloudflare/workers-types": "^4.20250214.0",
+    "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.30.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
