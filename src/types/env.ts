@@ -52,6 +52,11 @@ export interface Env {
   KALSHI_API_KEY: string;
   KALSHI_PRIVATE_KEY: string;
   ANTHROPIC_API_KEY: string;
+  MINIMAX_API_KEY?: string;    // Optional: MiniMax M2.5 for scanner fastpath
+  MOONSHOT_API_KEY?: string;   // Optional: Kimi K2.5 for scanner fastpath
+  GOOGLE_AI_API_KEY?: string;  // Optional: Gemini for scanner fastpath
+  LLM_ROUTING_FORCE_MODEL?: string;
+  LLM_ROUTING_FORCE_ROUTE_CLASS?: string;
   IBKR_USERNAME?: string;
   IBKR_PASSWORD?: string;
   IBKR_GATEWAY_URL?: string;
@@ -106,7 +111,13 @@ export interface ResearchEnv {
   R2_EVIDENCE: R2Bucket;
   KV_CACHE: KVNamespace;
   AI: Ai;
+  // LLM Provider API Keys
   ANTHROPIC_API_KEY: string;
+  MINIMAX_API_KEY?: string;    // Optional: MiniMax M2.5 for scanner fastpath
+  MOONSHOT_API_KEY?: string;   // Optional: Kimi K2.5 for scanner fastpath
+  GOOGLE_AI_API_KEY?: string;  // Optional: Gemini for scanner fastpath
+  LLM_ROUTING_FORCE_MODEL?: string;
+  LLM_ROUTING_FORCE_ROUTE_CLASS?: string;
   // Durable Objects needed for research
   RESEARCH_AGENT: DurableObjectNamespace;
   AUDIT_REPORTER: DurableObjectNamespace;
@@ -181,6 +192,11 @@ export function asResearchEnv(env: Env): ResearchEnv {
     KV_CACHE: env.KV_CACHE,
     AI: env.AI,
     ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
+    MINIMAX_API_KEY: env.MINIMAX_API_KEY,
+    MOONSHOT_API_KEY: env.MOONSHOT_API_KEY,
+    GOOGLE_AI_API_KEY: env.GOOGLE_AI_API_KEY,
+    LLM_ROUTING_FORCE_MODEL: env.LLM_ROUTING_FORCE_MODEL,
+    LLM_ROUTING_FORCE_ROUTE_CLASS: env.LLM_ROUTING_FORCE_ROUTE_CLASS,
     RESEARCH_AGENT: env.RESEARCH_AGENT,
     AUDIT_REPORTER: env.AUDIT_REPORTER,
     COMPLIANCE: env.COMPLIANCE,

@@ -6,17 +6,22 @@
  * - Structured outputs with rule-text citations
  * - Regression tests
  * - Human review workflow
+ * - Multi-provider routing with budget enforcement
  */
 
 import type { ResearchEnv } from '../../types/env';
 import { sha256String } from '../evidence/hasher';
 import { deterministicId } from '../utils/deterministic-id';
+import type { ModelId, TokenUsage, LLMRunType, ResolvedModelId } from '../llm/routing.types';
+import { modelIdToString, isValidResolvedModelId } from '../llm/routing.types';
+import { executeWithRouting } from '../llm/routing.policy';
+import { computeEstimatedCost } from '../llm/routing.manifest';
 
 export type LLMScoringRunType =
   | 'ambiguity_score'
   | 'resolution_analysis'
   | 'equivalence_assessment'
-  | 'rule_interpretation';
+  | 'invariant_explanation';
 
 export interface LLMScoringInput {
   runType: LLMScoringRunType;
@@ -172,9 +177,9 @@ Resolution Criteria: {{marketBCriteria}}
 Provide your equivalence assessment.`,
   },
 
-  rule_interpretation: {
+  invariant_explanation: {
     version: '1.0.0',
-    runType: 'rule_interpretation',
+    runType: 'invariant_explanation',
     systemPrompt: `You are an expert analyst interpreting prediction market resolution rules.
 
 Given a specific scenario, determine how the market would resolve according to its rules.
@@ -231,32 +236,9 @@ function renderTemplate(
 }
 
 /**
- * Call the LLM via Cloudflare AI binding
+ * Parse and validate LLM response JSON
  */
-async function callLLM(
-  env: ResearchEnv,
-  systemPrompt: string,
-  userPrompt: string
-): Promise<LLMScoringOutput> {
-  // Use any available text generation model via the AI binding
-  // Type assertion needed as model names may not be in the static type definitions
-  const response = await (env.AI.run as (model: string, input: unknown) => Promise<unknown>)(
-    '@cf/meta/llama-3.1-70b-instruct',
-    {
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      max_tokens: 2000,
-      temperature: 0.1, // Low temperature for consistent scoring
-    }
-  );
-
-  // Parse the response - it should be JSON
-  const responseText = typeof response === 'string'
-    ? response
-    : (response as { response?: string }).response ?? '';
-
+function parseAndValidateLLMResponse(responseText: string): LLMScoringOutput {
   try {
     const parsed = JSON.parse(responseText) as LLMScoringOutput;
 
@@ -287,10 +269,302 @@ async function callLLM(
   }
 }
 
+// ============================================================
+// MULTI-PROVIDER LLM CALLS (for routing layer)
+// ============================================================
+
 /**
- * Run an LLM scoring task with full governance
+ * Call LLM via a specific provider based on ModelId
+ */
+async function callProviderLLM(
+  env: ResearchEnv,
+  modelId: ModelId,
+  systemPrompt: string,
+  userPrompt: string
+): Promise<{ response: string; usage: { inputTokens: number; outputTokens: number } }> {
+  switch (modelId.provider) {
+    case 'cloudflare':
+      return callCloudflareAI(env, modelId.model, systemPrompt, userPrompt);
+
+    case 'anthropic':
+      return callAnthropicAPI(env, modelId.model, systemPrompt, userPrompt);
+
+    case 'minimax':
+      return callMiniMaxAPI(env, modelId.model, systemPrompt, userPrompt);
+
+    case 'moonshot':
+      return callMoonshotAPI(env, modelId.model, systemPrompt, userPrompt);
+
+    case 'google':
+      return callGoogleAPI(env, modelId.model, systemPrompt, userPrompt);
+
+    default:
+      throw new Error(`Unknown provider: ${modelId.provider}`);
+  }
+}
+
+/**
+ * Call Cloudflare Workers AI
+ */
+async function callCloudflareAI(
+  env: ResearchEnv,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string
+): Promise<{ response: string; usage: { inputTokens: number; outputTokens: number } }> {
+  const response = await (env.AI.run as (model: string, input: unknown) => Promise<unknown>)(
+    model,
+    {
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: 2000,
+      temperature: 0.1,
+    }
+  );
+
+  const responseText = typeof response === 'string'
+    ? response
+    : (response as { response?: string }).response ?? '';
+
+  // Estimate tokens (Workers AI doesn't return usage)
+  const inputTokens = Math.ceil((systemPrompt.length + userPrompt.length) / 4);
+  const outputTokens = Math.ceil(responseText.length / 4);
+
+  return { response: responseText, usage: { inputTokens, outputTokens } };
+}
+
+/**
+ * Call Anthropic API (Claude models)
+ */
+async function callAnthropicAPI(
+  env: ResearchEnv,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string
+): Promise<{ response: string; usage: { inputTokens: number; outputTokens: number } }> {
+  const apiKey = env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY not configured');
+  }
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Anthropic API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json() as {
+    content: Array<{ type: string; text: string }>;
+    usage: { input_tokens: number; output_tokens: number };
+  };
+
+  const responseText = data.content
+    .filter((c) => c.type === 'text')
+    .map((c) => c.text)
+    .join('');
+
+  return {
+    response: responseText,
+    usage: {
+      inputTokens: data.usage.input_tokens,
+      outputTokens: data.usage.output_tokens,
+    },
+  };
+}
+
+/**
+ * Call MiniMax API
+ */
+async function callMiniMaxAPI(
+  env: ResearchEnv,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string
+): Promise<{ response: string; usage: { inputTokens: number; outputTokens: number } }> {
+  // MiniMax API integration (placeholder - implement when API key is available)
+  const apiKey = (env as unknown as { MINIMAX_API_KEY?: string }).MINIMAX_API_KEY;
+  if (!apiKey) {
+    throw new Error('MINIMAX_API_KEY not configured');
+  }
+
+  const response = await fetch('https://api.minimax.chat/v1/text/chatcompletion_v2', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: 2000,
+      temperature: 0.1,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`MiniMax API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json() as {
+    choices: Array<{ message: { content: string } }>;
+    usage: { prompt_tokens: number; completion_tokens: number };
+  };
+
+  return {
+    response: data.choices[0]?.message?.content ?? '',
+    usage: {
+      inputTokens: data.usage.prompt_tokens,
+      outputTokens: data.usage.completion_tokens,
+    },
+  };
+}
+
+/**
+ * Call Moonshot (Kimi) API
+ */
+async function callMoonshotAPI(
+  env: ResearchEnv,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string
+): Promise<{ response: string; usage: { inputTokens: number; outputTokens: number } }> {
+  const apiKey = (env as unknown as { MOONSHOT_API_KEY?: string }).MOONSHOT_API_KEY;
+  if (!apiKey) {
+    throw new Error('MOONSHOT_API_KEY not configured');
+  }
+
+  const response = await fetch('https://api.moonshot.cn/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: 2000,
+      temperature: 0.1,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Moonshot API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json() as {
+    choices: Array<{ message: { content: string } }>;
+    usage: { prompt_tokens: number; completion_tokens: number };
+  };
+
+  return {
+    response: data.choices[0]?.message?.content ?? '',
+    usage: {
+      inputTokens: data.usage.prompt_tokens,
+      outputTokens: data.usage.completion_tokens,
+    },
+  };
+}
+
+/**
+ * Call Google Gemini API
+ */
+async function callGoogleAPI(
+  env: ResearchEnv,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string
+): Promise<{ response: string; usage: { inputTokens: number; outputTokens: number } }> {
+  const apiKey = (env as unknown as { GOOGLE_AI_API_KEY?: string }).GOOGLE_AI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GOOGLE_AI_API_KEY not configured');
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          maxOutputTokens: 2000,
+          temperature: 0.1,
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Google API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json() as {
+    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    usageMetadata: { promptTokenCount: number; candidatesTokenCount: number };
+  };
+
+  const responseText = data.candidates[0]?.content?.parts
+    .map((p) => p.text)
+    .join('') ?? '';
+
+  return {
+    response: responseText,
+    usage: {
+      inputTokens: data.usageMetadata.promptTokenCount,
+      outputTokens: data.usageMetadata.candidatesTokenCount,
+    },
+  };
+}
+
+/**
+ * Run an LLM scoring task with full governance.
+ * This now routes through the production routing layer by default.
  */
 export async function runLLMScoring(
+  env: ResearchEnv,
+  input: LLMScoringInput
+): Promise<LLMScoringRun> {
+  return runLLMScoringWithRouting(env, input);
+}
+
+/**
+ * Run an LLM scoring task with routing layer (multi-provider, budget-enforced)
+ *
+ * This function uses the routing layer to:
+ * - Select the appropriate model based on run type
+ * - Enforce budget limits
+ * - Handle fallbacks on provider failures
+ * - Log routing decisions for audit
+ */
+export async function runLLMScoringWithRouting(
   env: ResearchEnv,
   input: LLMScoringInput
 ): Promise<LLMScoringRun> {
@@ -307,23 +581,106 @@ export async function runLLMScoring(
     ...((input.additionalContext as Record<string, string>) ?? {}),
   });
 
-  // Call the LLM
-  const output = await callLLM(env, template.systemPrompt, userPrompt);
-
-  const createdAt = new Date().toISOString();
-
-  // Determine if human review is needed
-  const flaggedForHumanReview =
-    output.confidence < 0.7 ||
-    (output.warnings?.length ?? 0) > 0 ||
-    output.citedPassages.length === 0;
-
   // Build input text for storage
   const inputText = JSON.stringify({
     marketTitle: input.marketTitle,
     resolutionCriteria: input.resolutionCriteria,
     additionalContext: input.additionalContext,
   });
+
+  // Estimate tokens for routing (rough: 4 chars per token)
+  const estimatedInputTokens = Math.ceil(
+    (template.systemPrompt.length + userPrompt.length) / 4
+  );
+  const estimatedOutputTokens = 500; // Conservative estimate
+
+  // Execute with routing layer
+  const routingResult = await executeWithRouting(
+    env,
+    input.runType as LLMRunType,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    async (modelId: ModelId) => {
+      const { response, usage } = await callProviderLLM(
+        env,
+        modelId,
+        template.systemPrompt,
+        userPrompt
+      );
+
+      // Compute cost
+      const resolvedModelId = modelIdToString(modelId);
+      const costUsd = computeEstimatedCost(
+        isValidResolvedModelId(resolvedModelId)
+          ? (resolvedModelId as ResolvedModelId)
+          : 'cloudflare:@cf/meta/llama-3.1-70b-instruct',
+        usage.inputTokens,
+        usage.outputTokens,
+        0
+      );
+
+      const tokenUsage: TokenUsage = {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cachedTokens: 0,
+        costUsd,
+      };
+
+      return { response, usage: tokenUsage };
+    }
+  );
+
+  // Handle routing failure
+  if (!routingResult.success) {
+    const errorOutput: LLMScoringOutput = {
+      score: 0.5,
+      reasoning: `Routing failed: ${routingResult.error?.message ?? 'Unknown error'}`,
+      citedPassages: [],
+      confidence: 0.0,
+      warnings: [
+        `Routing error: ${routingResult.error?.code ?? 'UNKNOWN'}`,
+        routingResult.error?.message ?? '',
+      ],
+    };
+
+    const createdAt = new Date().toISOString();
+    const inputHash = await sha256String(inputText);
+    const runId = deterministicId(
+      'llm',
+      input.runType,
+      input.targetEntityType,
+      input.targetEntityId,
+      template.version,
+      inputHash,
+      createdAt
+    );
+
+    const run: LLMScoringRun = {
+      id: runId,
+      runType: input.runType,
+      targetEntityType: input.targetEntityType,
+      targetEntityId: input.targetEntityId,
+      promptTemplateVersion: template.version,
+      promptTemplateHash: promptHash,
+      modelId: routingResult.decision.resolvedModelId ?? 'routing:none',
+      inputText,
+      inputHash,
+      outputJson: errorOutput,
+      outputScore: errorOutput.score,
+      citedRulePassages: errorOutput.citedPassages,
+      confidence: errorOutput.confidence,
+      flaggedForHumanReview: true,
+      createdAt,
+    };
+
+    await storeScoringRun(env, run);
+    return run;
+  }
+
+  // Parse successful response
+  const output = parseAndValidateLLMResponse(routingResult.modelResponse as string);
+
+  const createdAt = new Date().toISOString();
   const inputHash = await sha256String(inputText);
   const runId = deterministicId(
     'llm',
@@ -335,6 +692,12 @@ export async function runLLMScoring(
     createdAt
   );
 
+  // Determine if human review is needed
+  const flaggedForHumanReview =
+    output.confidence < 0.7 ||
+    (output.warnings?.length ?? 0) > 0 ||
+    output.citedPassages.length === 0;
+
   const run: LLMScoringRun = {
     id: runId,
     runType: input.runType,
@@ -342,7 +705,7 @@ export async function runLLMScoring(
     targetEntityId: input.targetEntityId,
     promptTemplateVersion: template.version,
     promptTemplateHash: promptHash,
-    modelId: '@cf/meta/llama-3.1-70b-instruct',
+    modelId: routingResult.decision.resolvedModelId ?? 'routing:none',
     inputText,
     inputHash,
     outputJson: output,
@@ -350,6 +713,9 @@ export async function runLLMScoring(
     citedRulePassages: output.citedPassages,
     confidence: output.confidence,
     flaggedForHumanReview,
+    inputTokens: routingResult.usage?.inputTokens,
+    outputTokens: routingResult.usage?.outputTokens,
+    costUsd: routingResult.usage?.costUsd,
     createdAt,
   };
 

@@ -87,8 +87,10 @@ CREATE TABLE IF NOT EXISTS llm_drift_sweeps (
   sweep_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_llm_drift_sweeps_version ON llm_drift_sweeps(prompt_version);
-CREATE INDEX IF NOT EXISTS idx_llm_drift_sweeps_at ON llm_drift_sweeps(sweep_at);
+-- Intentionally no llm_drift_sweeps indexes here.
+-- Existing deployments may already have an older llm_drift_sweeps schema
+-- with different column names (e.g. baseline_prompt_version/run_at).
+-- Adding unconditional indexes here would fail that migration path.
 
 -- Compliance violations tracking
 CREATE TABLE IF NOT EXISTS compliance_violations (

@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS sources (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
-CREATE INDEX idx_sources_type ON sources(source_type);
-CREATE INDEX idx_sources_vendor ON sources(source_vendor);
-CREATE INDEX idx_sources_hash ON sources(evidence_hash);
-CREATE INDEX idx_sources_fetched ON sources(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_sources_table_type ON sources(source_type);
+CREATE INDEX IF NOT EXISTS idx_sources_table_vendor ON sources(source_vendor);
+CREATE INDEX IF NOT EXISTS idx_sources_table_hash ON sources(evidence_hash);
+CREATE INDEX IF NOT EXISTS idx_sources_table_fetched ON sources(fetched_at);

@@ -51,7 +51,7 @@ export type TestCategory =
   | 'ambiguous_phrasing' // Intentionally ambiguous criteria
   | 'adversarial' // Prompt injection attempts
   | 'equivalence' // Market equivalence assessment
-  | 'rule_interpretation'; // Specific rule interpretation
+  | 'invariant_explanation'; // Invariant/rule explanation quality
 
 export interface TestResult {
   testId: string;
@@ -609,7 +609,7 @@ export class RegressionTestRunner {
       ambiguous_phrasing: { total: 0, passed: 0, failed: 0, passRate: 0 },
       adversarial: { total: 0, passed: 0, failed: 0, passRate: 0 },
       equivalence: { total: 0, passed: 0, failed: 0, passRate: 0 },
-      rule_interpretation: { total: 0, passed: 0, failed: 0, passRate: 0 },
+      invariant_explanation: { total: 0, passed: 0, failed: 0, passRate: 0 },
     };
 
     for (const test of corpus) {
@@ -701,7 +701,7 @@ export class RegressionTestRunner {
       ambiguous_phrasing: 0,
       adversarial: 0,
       equivalence: 0,
-      rule_interpretation: 0,
+      invariant_explanation: 0,
     };
 
     for (const cat of Object.keys(categoryDrifts) as TestCategory[]) {

@@ -1,45 +1,56 @@
 # Paul P Security
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-02-26
+**Version:** 1.1.0  
+**Last Updated:** 2026-02-27
 
 ## Scope
 
-This document defines runtime security controls for Paul P, including key-scope handling, operational safeguards, and incident actions.
+Runtime security controls for credential scoping, deterministic control-path behavior, and routing/audit safeguards.
 
 ## Credential Scope Model
 
-Paul P uses scoped environment projections in `src/types/env.ts`:
+Scoped env projections in `src/types/env.ts`:
 
-- `ResearchEnv`: AI/LLM + research data paths
-- `TradingEnv`: trading credentials + execution paths
-- `IngestionEnv`: source ingestion without trading/LLM keys
-- `AuditEnv`: audit/compliance storage paths
+- `ResearchEnv`: LLM/research access
+- `TradingEnv`: execution credentials
+- `IngestionEnv`: ingestion-only bindings
+- `AuditEnv`: audit/compliance paths
 
-## Important Platform Constraint
+## Platform Constraint
 
-Current deployment model is a single Worker script. At runtime, the script has access to all configured bindings/secrets.  
-Scoped env types reduce accidental misuse in code paths but are not hard isolation boundaries by themselves.
+Current topology is a single Worker script. Scoped env types are compile-time guardrails, not hard runtime isolation by themselves.
 
-## Practical Controls in Place
+## Deterministic Control-Path Requirement
 
-- Fail-closed risk and compliance checks block unsafe progression
-- Admin routes require explicit authentication
-- Evidence-first ingestion stores raw payloads before parsing
-- Audit chain and anchor verification required for go-live
-- Deterministic IDs and immutable evidence hashes support traceability
+- P-05/P-09 hard invariants are deterministic code checks.
+- LLM responses are forbidden as hard-veto authority.
+- Routing class `deterministic_hard_control` is enforced as no-LLM fail-closed.
 
-## Recommended Hardening for Production
+## LLM Routing Security Controls
+
+- Closed run-type and route-class enums reduce ambiguous routing behavior.
+- Forced overrides are explicitly validated; invalid values fail closed.
+- Override usage is audit logged (`LLM_ROUTING_OVERRIDE`).
+- Model IDs are centrally defined in a manifest to prevent shadow aliases.
+- Provider cache semantics are explicit (not `cache_enabled: boolean`).
+
+## Audit and Forensics
+
+- Every routed decision is stored in `llm_routing_decisions`.
+- Fields include run type, route class, resolved provider/model, override flags, and failure reason.
+- Budget enforcement and routing failures are persisted for post-incident reconstruction.
+
+## Operational Hardening Recommendations
 
 1. Split research and execution into separate Worker deployments with distinct secret sets.
-2. Restrict API keys at provider level to minimum required permissions.
-3. Use Cloudflare Access for all admin endpoints.
-4. Enforce two-person approvals for go-live and risk-limit changes.
-5. Run quarterly credential rotation and DR drills.
+2. Enforce least-privilege provider API keys.
+3. Protect admin routes with Cloudflare Access + strong auth.
+4. Require two-person approval for go-live and risk-limit changes.
+5. Rotate secrets and run DR/security drills quarterly.
 
-## Security Event Response
+## Incident Response
 
-- Set circuit breaker `HALT` if trade integrity is uncertain.
-- Preserve evidence and audit artifacts.
-- Reconcile positions before any resume decision.
-- Track corrective actions through incident postmortem.
+- Set circuit breaker `HALT` when trade integrity is uncertain.
+- Preserve evidence and audit artifacts before remediation.
+- Reconcile positions before resume.
+- Track corrective action in postmortem.

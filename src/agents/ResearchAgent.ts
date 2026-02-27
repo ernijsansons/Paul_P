@@ -370,7 +370,7 @@ export class ResearchAgent extends PaulPAgent {
       ambiguity_score: getPromptVersion('ambiguity_score'),
       resolution_analysis: getPromptVersion('resolution_analysis'),
       equivalence_assessment: getPromptVersion('equivalence_assessment'),
-      rule_interpretation: getPromptVersion('rule_interpretation'),
+      invariant_explanation: getPromptVersion('invariant_explanation'),
     });
   }
 }

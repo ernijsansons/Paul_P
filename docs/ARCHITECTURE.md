@@ -1,62 +1,88 @@
 # Paul P Architecture
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-02-26
+**Version:** 1.1.0  
+**Last Updated:** 2026-02-27
 
 ## System Overview
 
-Paul P is a Cloudflare-native prediction market research and execution system built with:
+Paul P is a Cloudflare-native prediction-market research and execution system built from:
 
-- Worker entrypoint (`src/index.ts`) for HTTP routes, queue consumers, and cron routing
-- Durable Object agents (`src/agents/*`) for long-lived stateful services
-- D1 for relational state and audit metadata
-- R2 for immutable evidence and audit payload storage
-- KV for short-lived cache and lightweight coordination
+- Worker entrypoint (`src/index.ts`) for HTTP routes, queue consumers, and cron dispatch
+- Durable Object agents (`src/agents/*`) for stateful orchestration and strategy logic
+- D1 for transactional state and audit metadata
+- R2 for immutable evidence/audit artifacts
+- KV for short-lived coordination/cache
 - Queues for ingestion, signal, order, and pairing fan-out
 
 ## Core Agent Responsibilities
 
-- `PaulPOrchestrator`: cron and lifecycle orchestration, order workflow state
-- `MarketDataAgent`: venue ingestion and evidence-first persistence
-- `ResearchAgent`: ambiguity scoring, equivalence assessment, pairing approval flow
-- `Strategy*Agent`: signal generation by strategy family
-- `RiskGovernorAgent`: invariant checks and risk veto/approval
-- `KalshiExecAgent` and `IBKRExecAgent`: venue execution and position reads
-- `ReconciliationAgent`: position drift detection and recovery workflows
-- `AuditReporterAgent`: append-only audit logging and anchoring
-- `ComplianceAgent`: source policy checks and compliance exports
+- `PaulPOrchestrator`: lifecycle scheduling and workflow coordination
+- `MarketDataAgent`: ingestion and evidence-first persistence
+- `ResearchAgent`: ambiguity/equivalence governance flows
+- `Strategy*Agent`: strategy-specific signal generation
+- `RiskGovernorAgent`: deterministic invariant checks and veto decisions
+- `KalshiExecAgent` / `IBKRExecAgent`: execution and venue integration
+- `ReconciliationAgent`: position drift detection/recovery
+- `AuditReporterAgent`: append-only audit handling and anchor support
+- `ComplianceAgent`: policy/compliance controls
 
-## Data Flow
+## Control-Plane Principle
 
-1. Cron triggers ingestion scan via `PaulPOrchestrator`.
-2. Ingestion consumers fetch venue data and store raw evidence in R2 before parsing.
-3. Strategy agents emit trading signals.
-4. Orchestrator creates order lifecycle records and runs validation + risk checks.
-5. Execution agents place orders or simulate paper fills.
-6. Reconciliation compares internal lifecycle state with venue-reported positions.
-7. Audit and compliance trails are written for all critical actions.
+- Hard controls are deterministic and code-first (P-05/P-09).
+- LLM output is never a primary veto signal for hard-risk gating.
+- LLM usage is restricted to analysis/enrichment/explanation paths.
 
-## Workflow Modules
+## LLM Routing Layer
 
-Workflow modules in `src/workflows` provide typed orchestration shims over deployed agents:
+The routing layer lives in `src/lib/llm/routing.*` and provides deterministic, audit-grade model selection.
 
-- `DataIngestionWorkflow`
-- `SignalGenerationWorkflow`
-- `OrderLifecycleWorkflow`
-- `ReconciliationWorkflow`
-- `DailyReportWorkflow`
-- `StrategyDeploymentWorkflow`
-- `MarketPairingWorkflow`
+### Closed Run Types
 
-## Storage Model
+- `ambiguity_score`
+- `equivalence_assessment`
+- `resolution_analysis`
+- `invariant_explanation`
+- `postmortem_summary`
+- `wallet_cluster_synthesis`
+- `signal_scanning`
+- `general_enrichment`
 
-- D1 primary: strategy state, order lifecycle metadata, invariant checks, governance records
-- D1 anchor: audit chain anchor material separated from primary trade state
-- R2 evidence: compressed raw API responses, keyed by source/date/hash
-- R2 audit: hash-chain payload artifacts and anchor support data
+### Route Classes
+
+- `deterministic_hard_control` (no LLM allowed)
+- `premium_cognition`
+- `scanner_fastpath`
+- `synthesis_long_context`
+- `cheap_enrichment`
+
+### Deterministic Precedence
+
+1. Explicit forced override/testing override
+2. Safety-critical or premium-cognition run types
+3. Strategy-specific mappings
+4. Default low-cost enrichment
+
+### Manifest-Based Models
+
+Model/provider IDs are centralized in `routing.manifest.ts` (no fake aliases), including:
+
+- `anthropic:claude-opus-4-6`
+- `minimax:MiniMax-M2.5-highspeed`
+- `moonshot:kimi-k2.5`
+- `google:gemini-3-flash-preview`
+
+Gemini preview dependency is documented and replaceable via manifest mapping.
+
+### Auditing and Budgets
+
+- Every routing decision is persisted in `llm_routing_decisions`.
+- Override usage is explicitly logged.
+- Budgets are assumption-driven in `routing.budget.ts` (derived projections, deterministic math).
+
+See [LLM_ROUTING.md](./LLM_ROUTING.md) for policy-level details.
 
 ## Security Boundaries
 
-- Research/LLM and trading credentials are separated via scoped environment helpers in `src/types/env.ts`.
-- Strategy execution remains fail-closed: invariant or compliance errors block progression.
-- Audit integrity is mandatory for go-live and incident closure.
+- Research/LLM and trading credential scopes are separated via scoped env types in `src/types/env.ts`.
+- Runtime fail-closed behavior is required for risk/compliance checks.
+- Audit integrity is mandatory for incident closure and go-live posture.

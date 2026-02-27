@@ -1,13 +1,13 @@
 # Paul P Runbook
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-02-26
+**Version:** 1.1.0  
+**Last Updated:** 2026-02-27
 
 ## Preconditions
 
-- Cloudflare resources exist (D1, R2, KV, queues, Durable Object bindings)
-- `wrangler.toml` IDs are replaced with real resource IDs
-- Required secrets are configured
+- Cloudflare resources exist (D1, R2, KV, queues, Durable Objects).
+- `wrangler.toml` bindings use real resource IDs.
+- Required secrets are configured.
 
 ## Required Secrets
 
@@ -17,7 +17,22 @@ wrangler secret put KALSHI_PRIVATE_KEY
 wrangler secret put ANTHROPIC_API_KEY
 ```
 
-Optional:
+Optional LLM provider keys:
+
+```bash
+wrangler secret put MINIMAX_API_KEY
+wrangler secret put MOONSHOT_API_KEY
+wrangler secret put GOOGLE_AI_API_KEY
+```
+
+Optional routing overrides (emergency/testing only):
+
+```bash
+wrangler secret put LLM_ROUTING_FORCE_MODEL
+wrangler secret put LLM_ROUTING_FORCE_ROUTE_CLASS
+```
+
+Optional operational secrets:
 
 ```bash
 wrangler secret put IBKR_USERNAME
@@ -28,12 +43,12 @@ wrangler secret put ADMIN_TOKEN
 
 ## Deploy Procedure
 
-1. Validate code and tests:
+1. Validate typecheck/tests:
 ```bash
 npm run lint
 npm test
 ```
-2. Apply D1 migrations:
+2. Apply migrations:
 ```bash
 npm run db:migrate
 ```
@@ -42,32 +57,48 @@ npm run db:migrate
 npm run deploy
 ```
 
-## Health Validation
+## Routing Operations
 
-- `GET /health`
-- `GET /admin/status` (authenticated)
-- `GET /admin/audit/status` (authenticated)
-- `GET /admin/phase-gates` (authenticated)
+### Check Routing Budget State
 
-## Manual Operational Triggers
+```bash
+curl https://paul-p.ernijs-ansons.workers.dev/admin/routing/budget \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
 
-- Trigger ingestion: `POST /admin/trigger/ingest`
-- Trigger signal scan: `POST /admin/trigger/scan`
-- Trigger execution: `POST /admin/trigger/execute`
-- Trigger reconciliation: `POST /admin/reconcile`
-- Trigger daily report: `POST /admin/report/daily`
+### Budget Alert Response
 
-## Go-Live Control
+1. Identify impacted budget category.
+2. Confirm route mix/call volume deltas.
+3. Wait for period reset (daily UTC midnight, monthly UTC day 1) or adjust assumptions.
+4. Recompute derived envelopes in `src/lib/llm/routing.budget.ts` and deploy.
 
-1. Run phase gate checks for current phase.
-2. Confirm drift sweep has no deployment block.
-3. Confirm audit chain integrity and anchor recency.
-4. Complete human approval (`/admin/strategies/:id/go-live`) with required signoff policy.
+### Override Usage Policy
+
+- Use overrides only for controlled testing or emergency rerouting.
+- All overrides must map to known manifest model IDs / supported route classes.
+- Invalid override requests fail closed.
+- Override usage is audit-logged.
+
+## Deterministic Hard-Control Rule
+
+- Do not route hard risk-control veto paths through LLM calls.
+- If `deterministic_hard_control` is requested in the LLM wrapper, request is blocked by policy.
+- Use LLM only for post-halt explanation/analysis workflows.
+
+## Budget Categories
+
+- `research_scoring`
+- `trading_validation`
+- `ingestion_classification`
+- `governance_audit`
+
+Budgets are derived from assumptions (calls/day, route mix, token assumptions, retry/cache rates, pricing) instead of static magic totals.
 
 ## Rollback
 
 1. Set circuit breaker to `HALT`.
 2. Disable strategy execution policies.
-3. Cancel outstanding open orders.
-4. Run reconciliation and capture incident artifacts.
+3. Cancel outstanding orders.
+4. Run reconciliation and preserve evidence.
 5. Open postmortem using `docs/POSTMORTEM_TEMPLATE.md`.
