@@ -163,10 +163,86 @@ Budgets are derived from these assumptions; no contradictory fixed monthly total
 3. Run typecheck/tests and verify cost projection deltas.
 4. Roll out with override guardrails if needed.
 
+## Provider Dispatch Layer
+
+Source of truth: `src/lib/llm/providers.ts`
+
+The routing layer resolves WHICH model. The dispatch layer handles HOW.
+
+### Provider API Formats
+
+| Provider | API Format | Auth | Base URL | Timeout |
+|----------|-----------|------|----------|---------|
+| Anthropic | Messages API | x-api-key header | api.anthropic.com/v1/messages | 60s |
+| MiniMax | OpenAI-compatible | Bearer token | api.minimax.chat/v1/text/chatcompletion_v2 | 30s |
+| Moonshot | OpenAI-compatible | Bearer token | api.moonshot.cn/v1/chat/completions | 60s |
+| Google | Gemini REST | API key in URL | generativelanguage.googleapis.com/v1beta | 30s |
+| Cloudflare | Workers AI binding | env.AI.run | N/A (local) | N/A |
+
+### Call Flow
+
+1. Agent calls `routeAndExecuteGovernedLLMCall(env, input)` (canonical contract) or `runLLMScoringWithRouting` for scoring
+2. Executor loads prompt template and renders variables
+3. Routing layer (`routeLLMCall`) resolves model based on run type
+4. Dispatch layer (`dispatchLLMRequest`) calls correct provider API
+5. Response normalized to `LLMResponse` format
+6. Success/failure logged to audit trail
+7. Result returned with token usage and cost
+
+### Error Types
+
+- `LLMProviderKeyError` — Missing API key for required provider
+- `LLMProviderCallError` — Provider API failure with typed codes:
+  - `PROVIDER_AUTH_FAILED` (HTTP 401/403)
+  - `PROVIDER_RATE_LIMITED` (HTTP 429)
+  - `PROVIDER_SERVER_ERROR` (HTTP 500+)
+  - `PROVIDER_TIMEOUT` (AbortController timeout)
+  - `PROVIDER_PARSE_ERROR` (Invalid response format)
+
+### Anthropic Prompt Caching
+
+When `cacheStrategy` is `anthropic_prompt_cache`, the system prompt is sent with:
+
+```json
+{
+  "system": [{ "type": "text", "text": "...", "cache_control": { "type": "ephemeral" } }]
+}
+```
+
+Cached tokens are reported separately in usage metrics.
+
+### Adding a New Provider
+
+1. Add provider to `LLMProvider` union in `routing.types.ts`
+2. Add model ID to `ResolvedModelId` union in `routing.types.ts`
+3. Add cache strategy if applicable to `LLMCacheStrategy` union
+4. Add model config to `MODEL_MANIFEST` in `routing.manifest.ts`
+5. Add route class mapping in `ROUTE_CLASS_CONFIG`
+6. Add `call{Provider}()` function in `providers.ts`
+7. Add case to `dispatchLLMRequest` switch in `providers.ts`
+8. Add key to `ProviderKeys` interface and `extractProviderKeys`
+9. Add secret to Env type in `src/types/env.ts`
+10. Set secret: `npx wrangler secret put {PROVIDER}_API_KEY`
+11. Add tests in `tests/unit/llm-providers.test.ts`
+12. Update this document
+
+### Setting Up Provider Keys
+
+All four provider keys are required (fail-closed policy). Missing any key prevents LLM calls.
+
+```bash
+# All required (fail-closed)
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put MINIMAX_API_KEY
+npx wrangler secret put MOONSHOT_API_KEY
+npx wrangler secret put GOOGLE_AI_API_KEY
+```
+
 ## Primary Files
 
 - `src/lib/llm/routing.types.ts`
 - `src/lib/llm/routing.manifest.ts`
 - `src/lib/llm/routing.policy.ts`
 - `src/lib/llm/routing.budget.ts`
+- `src/lib/llm/providers.ts`
 - `src/lib/research/llm-governance.ts`

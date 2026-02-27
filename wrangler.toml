@@ -190,10 +190,10 @@ class_name = "AuditReporterAgent"
 name = "COMPLIANCE"
 class_name = "ComplianceAgent"
 
-# Durable Object migrations
+# Durable Object migrations (SQLite-backed)
 [[migrations]]
 tag = "v1"
-new_classes = [
+new_sqlite_classes = [
   "PaulPOrchestrator",
   "ResearchAgent",
   "MarketDataAgent",

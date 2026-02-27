@@ -14,12 +14,9 @@
 ```bash
 wrangler secret put KALSHI_API_KEY
 wrangler secret put KALSHI_PRIVATE_KEY
+
+# LLM provider keys (all 4 required - fail-closed policy)
 wrangler secret put ANTHROPIC_API_KEY
-```
-
-Optional LLM provider keys:
-
-```bash
 wrangler secret put MINIMAX_API_KEY
 wrangler secret put MOONSHOT_API_KEY
 wrangler secret put GOOGLE_AI_API_KEY
@@ -94,6 +91,55 @@ curl https://paul-p.ernijs-ansons.workers.dev/admin/routing/budget \
 - `governance_audit`
 
 Budgets are derived from assumptions (calls/day, route mix, token assumptions, retry/cache rates, pricing) instead of static magic totals.
+
+## LLM Provider Operations
+
+### Check Configured Secrets
+
+```bash
+npx wrangler secret list
+```
+
+### Rotate a Provider Key
+
+```bash
+# 1. Generate new key at provider dashboard
+# 2. Update in Workers Secrets
+npx wrangler secret put ANTHROPIC_API_KEY
+# 3. Worker automatically picks up new key on next request
+```
+
+### Force All LLM Calls to One Model
+
+```bash
+# Set override (emergency/testing only)
+npx wrangler secret put LLM_ROUTING_FORCE_MODEL
+# Enter model ID: anthropic:claude-opus-4-6
+
+# Remove override
+npx wrangler secret delete LLM_ROUTING_FORCE_MODEL
+```
+
+### Provider Error Troubleshooting
+
+| Error Code | Cause | Action |
+|------------|-------|--------|
+| `PROVIDER_AUTH_FAILED` | API key invalid/expired | Rotate key via provider dashboard |
+| `PROVIDER_RATE_LIMITED` | Too many requests | Check budget assumptions, increase intervals |
+| `PROVIDER_SERVER_ERROR` | Provider outage | Check status page, force override to different provider |
+| `PROVIDER_TIMEOUT` | Slow response | Check prompt size, increase timeout for long-context |
+| `PROVIDER_KEY_MISSING` | Secret not set | `npx wrangler secret put <KEY_NAME>` |
+
+### Check Provider Availability
+
+The system uses fallback chains. If primary provider fails, next in chain is tried:
+
+- `premium_cognition`: Anthropic → Moonshot → Google → Cloudflare
+- `scanner_fastpath`: MiniMax → Google → Moonshot → Cloudflare
+- `synthesis_long_context`: Moonshot → Google → Anthropic → Cloudflare
+- `cheap_enrichment`: Google → MiniMax → Moonshot → Cloudflare
+
+Cloudflare Workers AI is always available as last resort (uses env.AI binding, not API key).
 
 ## Rollback
 

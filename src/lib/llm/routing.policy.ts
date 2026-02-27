@@ -288,6 +288,15 @@ async function storeRoutingDecision(env: ResearchEnv, decision: RoutingDecision)
         })
       : JSON.stringify({ no_llm: true });
 
+  const decisionHash = await sha256String(
+    JSON.stringify({
+      runType: decision.runType,
+      routeClass: decision.routeClass,
+      resolvedModelId: decision.resolvedModelId,
+      resolutionSource: decision.resolutionSource,
+    })
+  );
+
   await env.DB.prepare(
     `
     INSERT INTO llm_routing_decisions (
@@ -311,15 +320,7 @@ async function storeRoutingDecision(env: ResearchEnv, decision: RoutingDecision)
       decision.latencyMs ?? null,
       decision.success ? 1 : 0,
       decision.failureReason ?? null,
-      // use deterministic decision id hash material for stable trace checks
-      await sha256String(
-        JSON.stringify({
-          runType: decision.runType,
-          routeClass: decision.routeClass,
-          resolvedModelId: decision.resolvedModelId,
-          resolutionSource: decision.resolutionSource,
-        })
-      ),
+      decisionHash,
       decision.strategyId ?? null,
       decision.overrideUsed ? 1 : 0,
       decision.overrideReason ?? null,
@@ -327,8 +328,40 @@ async function storeRoutingDecision(env: ResearchEnv, decision: RoutingDecision)
     )
     .run();
 
+  // Emit LLM_ROUTING_DECISION for EVERY persisted routing decision
+  const routingAuditId = deterministicId(
+    'llm-routing-decision',
+    decision.runType,
+    decision.routeClass,
+    decision.timestamp
+  );
+  await env.DB.prepare(
+    `
+    INSERT INTO audit_log (id, event_type, entity_type, entity_id, payload, timestamp)
+    VALUES (?, 'LLM_ROUTING_DECISION', 'llm_routing', ?, ?, ?)
+  `
+  )
+    .bind(
+      routingAuditId,
+      decision.id,
+      JSON.stringify({
+        runType: decision.runType,
+        routeClass: decision.routeClass,
+        resolvedModelId: decision.resolvedModelId,
+        resolutionSource: decision.resolutionSource,
+        success: decision.success,
+        projectedCostUsd: decision.projectedCostUsd,
+        actualCostUsd: decision.actualCostUsd,
+        budgetCategory: decision.budgetCategory,
+        decisionHash,
+      }),
+      decision.timestamp
+    )
+    .run();
+
+  // Additionally emit LLM_ROUTING_OVERRIDE for override cases (kept as-is)
   if (decision.overrideUsed) {
-    const auditId = deterministicId(
+    const overrideAuditId = deterministicId(
       'llm-routing-override',
       decision.runType,
       decision.routeClass,
@@ -341,7 +374,7 @@ async function storeRoutingDecision(env: ResearchEnv, decision: RoutingDecision)
     `
     )
       .bind(
-        auditId,
+        overrideAuditId,
         decision.id,
         JSON.stringify({
           runType: decision.runType,

@@ -16,6 +16,26 @@ Scoped env projections in `src/types/env.ts`:
 - `IngestionEnv`: ingestion-only bindings
 - `AuditEnv`: audit/compliance paths
 
+### LLM Provider Key Scoping (P-22)
+
+All LLM provider keys are scoped to ResearchAgent via the unified routing layer.
+
+| Secret | Provider | Route Class | Scoped To |
+|--------|----------|-------------|-----------|
+| `ANTHROPIC_API_KEY` | Anthropic | premium_cognition | ResearchAgent |
+| `MINIMAX_API_KEY` | MiniMax | scanner_fastpath | ResearchAgent |
+| `MOONSHOT_API_KEY` | Moonshot | synthesis_long_context | ResearchAgent |
+| `GOOGLE_AI_API_KEY` | Google | cheap_enrichment | ResearchAgent |
+
+Key rules:
+- LLM keys: ONLY accessible by ResearchAgent (via `dispatchLLMRequest`)
+- Trading keys: ONLY accessible by KalshiExecAgent
+- NO agent has access to both LLM and trading keys
+- Agents NEVER call providers directly — all calls go through routing layer
+
+Required (fail-closed): `ANTHROPIC_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `GOOGLE_AI_API_KEY`
+Missing any of these keys fails closed at LLM execution time.
+
 ## Platform Constraint
 
 Current topology is a single Worker script. Scoped env types are compile-time guardrails, not hard runtime isolation by themselves.

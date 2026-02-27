@@ -52,9 +52,9 @@ export interface Env {
   KALSHI_API_KEY: string;
   KALSHI_PRIVATE_KEY: string;
   ANTHROPIC_API_KEY: string;
-  MINIMAX_API_KEY?: string;    // Optional: MiniMax M2.5 for scanner fastpath
-  MOONSHOT_API_KEY?: string;   // Optional: Kimi K2.5 for scanner fastpath
-  GOOGLE_AI_API_KEY?: string;  // Optional: Gemini for scanner fastpath
+  MINIMAX_API_KEY: string;     // Required: MiniMax M2.5 for scanner fastpath (fail-closed)
+  MOONSHOT_API_KEY: string;    // Required: Kimi K2.5 for scanner fastpath (fail-closed)
+  GOOGLE_AI_API_KEY: string;   // Required: Gemini for scanner fastpath (fail-closed)
   LLM_ROUTING_FORCE_MODEL?: string;
   LLM_ROUTING_FORCE_ROUTE_CLASS?: string;
   IBKR_USERNAME?: string;
@@ -111,11 +111,11 @@ export interface ResearchEnv {
   R2_EVIDENCE: R2Bucket;
   KV_CACHE: KVNamespace;
   AI: Ai;
-  // LLM Provider API Keys
+  // LLM Provider API Keys (ALL required - fail-closed per P-22)
   ANTHROPIC_API_KEY: string;
-  MINIMAX_API_KEY?: string;    // Optional: MiniMax M2.5 for scanner fastpath
-  MOONSHOT_API_KEY?: string;   // Optional: Kimi K2.5 for scanner fastpath
-  GOOGLE_AI_API_KEY?: string;  // Optional: Gemini for scanner fastpath
+  MINIMAX_API_KEY: string;     // Required: MiniMax M2.5 for scanner fastpath
+  MOONSHOT_API_KEY: string;    // Required: Kimi K2.5 for scanner fastpath
+  GOOGLE_AI_API_KEY: string;   // Required: Gemini for scanner fastpath
   LLM_ROUTING_FORCE_MODEL?: string;
   LLM_ROUTING_FORCE_ROUTE_CLASS?: string;
   // Durable Objects needed for research
