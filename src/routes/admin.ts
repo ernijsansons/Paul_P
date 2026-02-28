@@ -35,6 +35,22 @@ interface TurnstileVerifyResponse {
   ['error-codes']?: string[];
 }
 
+type TradeVenue = 'kalshi' | 'ibkr';
+
+type TradeRecord = Record<string, unknown> & {
+  created_at?: string;
+  status?: string;
+  execution_mode?: string;
+  venue?: TradeVenue;
+};
+
+function toTradeRecord(value: unknown): TradeRecord {
+  if (value && typeof value === 'object') {
+    return { ...(value as Record<string, unknown>) };
+  }
+  return { raw: value };
+}
+
 function getBearerToken(authHeader: string | undefined): string | null {
   if (!authHeader?.startsWith('Bearer ')) {
     return null;
@@ -261,6 +277,142 @@ adminRoutes.get('/strategies/:id', async (c) => {
     strategy,
     recentOrders: orders.results,
     executionPolicy: policy,
+  });
+});
+
+/**
+ * Get unified trade history from execution agents.
+ * Query params:
+ * - venue: all | kalshi | ibkr (default: all)
+ * - limit: 1..500 (default: 100)
+ * - strategy: strategy filter
+ * - ticker: Kalshi-only ticker filter
+ * - status: order status filter (applied after fetch)
+ * - mode: PAPER | LIVE (applied after fetch)
+ */
+adminRoutes.get('/trades', async (c) => {
+  const url = new URL(c.req.url);
+
+  const venue = (url.searchParams.get('venue') ?? 'all').toLowerCase();
+  if (!['all', 'kalshi', 'ibkr'].includes(venue)) {
+    return c.json({ error: 'Invalid venue. Must be all, kalshi, or ibkr.' }, 400);
+  }
+
+  const limitParam = url.searchParams.get('limit');
+  const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : 100;
+  if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+    return c.json({ error: 'Invalid limit. Must be a positive integer.' }, 400);
+  }
+  const limit = Math.min(parsedLimit, 500);
+
+  const strategy = url.searchParams.get('strategy');
+  const ticker = url.searchParams.get('ticker');
+  const statusFilter = url.searchParams.get('status')?.toLowerCase();
+  const modeFilter = url.searchParams.get('mode')?.toUpperCase();
+
+  if (modeFilter && !['PAPER', 'LIVE'].includes(modeFilter)) {
+    return c.json({ error: 'Invalid mode. Must be PAPER or LIVE.' }, 400);
+  }
+
+  const venues: TradeVenue[] = venue === 'all' ? ['kalshi', 'ibkr'] : [venue as TradeVenue];
+
+  const results = await Promise.all(
+    venues.map(async (sourceVenue) => {
+      const namespace = sourceVenue === 'kalshi' ? c.env.KALSHI_EXEC : c.env.IBKR_EXEC;
+      const objectId = namespace.idFromName('singleton');
+      const stub = namespace.get(objectId);
+
+      const internalUrl = new URL('http://internal/orders/history');
+      internalUrl.searchParams.set('limit', String(limit));
+      if (strategy) {
+        internalUrl.searchParams.set('strategy', strategy);
+      }
+      if (sourceVenue === 'kalshi' && ticker) {
+        internalUrl.searchParams.set('ticker', ticker);
+      }
+
+      try {
+        const response = await stub.fetch(internalUrl.toString());
+        if (!response.ok) {
+          return {
+            venue: sourceVenue,
+            orders: [] as TradeRecord[],
+            error: `${sourceVenue} execution agent returned ${response.status}`,
+          };
+        }
+
+        const payload = await response.json<{ orders?: unknown[]; error?: string }>();
+        if (payload.error) {
+          return {
+            venue: sourceVenue,
+            orders: [] as TradeRecord[],
+            error: payload.error,
+          };
+        }
+
+        const orders = (payload.orders ?? []).map((entry) => ({
+          ...toTradeRecord(entry),
+          venue: sourceVenue,
+        }));
+
+        return { venue: sourceVenue, orders };
+      } catch (error) {
+        return {
+          venue: sourceVenue,
+          orders: [] as TradeRecord[],
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })
+  );
+
+  const errors = results
+    .filter((result) => result.error)
+    .map((result) => ({
+      venue: result.venue,
+      message: result.error as string,
+    }));
+
+  const filteredTrades = results
+    .flatMap((result) => result.orders)
+    .filter((trade) => {
+      if (statusFilter) {
+        if (typeof trade.status !== 'string' || trade.status.toLowerCase() !== statusFilter) {
+          return false;
+        }
+      }
+      if (modeFilter) {
+        if (typeof trade.execution_mode !== 'string' || trade.execution_mode.toUpperCase() !== modeFilter) {
+          return false;
+        }
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const aTime = typeof a.created_at === 'string' ? Date.parse(a.created_at) : Number.NaN;
+      const bTime = typeof b.created_at === 'string' ? Date.parse(b.created_at) : Number.NaN;
+
+      if (Number.isNaN(aTime) && Number.isNaN(bTime)) return 0;
+      if (Number.isNaN(aTime)) return 1;
+      if (Number.isNaN(bTime)) return -1;
+      return bTime - aTime;
+    })
+    .slice(0, limit);
+
+  return c.json({
+    count: filteredTrades.length,
+    trades: filteredTrades,
+    filters: {
+      venue,
+      limit,
+      strategy: strategy ?? null,
+      ticker: ticker ?? null,
+      status: statusFilter ?? null,
+      mode: modeFilter ?? null,
+    },
+    partial: errors.length > 0,
+    errors: errors.length > 0 ? errors : undefined,
+    timestamp: new Date().toISOString(),
   });
 });
 

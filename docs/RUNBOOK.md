@@ -74,6 +74,25 @@ curl https://paul-p.ernijs-ansons.workers.dev/admin/routing/budget \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
+### View Recent Trades
+
+```bash
+curl "https://paul-p.ernijs-ansons.workers.dev/admin/trades?limit=100" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+Common filters:
+
+```bash
+# One venue only
+curl "https://paul-p.ernijs-ansons.workers.dev/admin/trades?venue=kalshi&limit=50" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Strategy + status + mode
+curl "https://paul-p.ernijs-ansons.workers.dev/admin/trades?strategy=bonding&status=filled&mode=PAPER&limit=100" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
 ### Budget Alert Response
 
 1. Identify impacted budget category.
@@ -181,3 +200,88 @@ Cloudflare Workers AI is always available as last resort (uses env.AI binding, n
 3. Cancel outstanding orders.
 4. Run reconciliation and preserve evidence.
 5. Open postmortem using `docs/POSTMORTEM_TEMPLATE.md`.
+
+---
+
+## Deployment Validation History
+
+### 2026-02-28: LLM Governance Hardening Deployment
+
+**Deployment ID:** aa4dbcb9-064d-401c-b9d7-b3dac5b956ef
+**Commits:** ad18ee4, 1621b23, 3d10aa0, 46aad5b, d7f0d66
+
+**Components Deployed:**
+- LLM executor with fail-closed policy (`src/lib/llm/executor.ts` - 424 lines)
+- Complete routing policy engine (`src/lib/llm/routing.policy.ts` - 833 lines)
+- Drift sweep detection and blocking (`src/lib/llm/drift-sweeps.ts` - 188 lines)
+- Hardened admin routes with phase gates (`src/routes/admin.ts` - 884 lines)
+- Fail-closed Kalshi RSA-PSS auth (`src/lib/kalshi/auth.ts`)
+- Database migrations 0018-0019 (LLM routing tables)
+
+**Validation Results:**
+
+**Phase 1: Deployment Validation** ✅
+- Full Test Suite: **667 tests passed** across 25 test files
+- No regressions detected
+- Test Duration: 36.76s
+
+**Database Migrations:** ✅
+- Migration 0018 (llm_routing.sql): Applied successfully
+- Migration 0019 (llm_routing_audit_fields.sql): Applied successfully
+- Tables created:
+  - `llm_routing_decisions` (routing audit log)
+  - `llm_budget_usage` (budget tracking)
+  - `llm_drift_sweeps` (drift detection)
+- Views created:
+  - `v_daily_budget_summary`
+  - `v_monthly_budget_summary`
+  - `v_routing_success_rate`
+
+**Critical Test Coverage Validated:**
+- CLV computation (P-01): 26 tests ✓
+- Risk invariants (all 17 checks): 57 tests ✓
+- LLM routing policy: 16 unit tests, 3 integration tests ✓
+- Order lifecycle state machine: 73 tests ✓
+- Kalshi RSA-PSS auth: 5 tests ✓
+- Admin trade history: 4 tests ✓
+- Account skill scoring: 19 tests ✓
+- Evidence-first pattern: 20 tests ✓
+- Kelly sizing: 23 tests ✓
+- Circuit breaker state machine: 26 tests ✓
+- LLM governance: 55 tests ✓
+
+**Deployment Health:** ✅
+- Worker deployed successfully
+- All Cloudflare bindings configured:
+  - D1 Databases: paul-p-primary, paul-p-anchor
+  - R2 Buckets: paul-p-audit, paul-p-evidence
+  - KV Namespace: KV_CACHE
+  - Queues: 4 producers + 4 consumers
+  - Durable Objects: 14 classes
+  - Cron Triggers: 7 scheduled jobs
+
+**LLM Provider Failover Chain:**
+- Premium Cognition: Anthropic → Moonshot → Google → Cloudflare Workers AI
+- Scanner Fastpath: MiniMax → Google → Moonshot → Cloudflare Workers AI
+- Synthesis Long Context: Moonshot → Google → Anthropic → Cloudflare Workers AI
+- Cheap Enrichment: Google → MiniMax → Moonshot → Cloudflare Workers AI
+
+**Fail-Closed Mechanisms Verified:**
+- LLM routing: Invalid overrides → reject request ✓
+- Budget enforcement: Exhausted provider → skip to next in chain ✓
+- Drift sweeps: Score >0.7 → block request ✓
+- Kalshi auth: Missing credentials → fail-closed ✓
+- Admin auth: Invalid token → 401 Unauthorized ✓
+
+**Next Steps:**
+- Phase 2→3 Gate Preparation:
+  - Complete bonding + weather strategy E2E tests
+  - Validate evidence-first pattern in all API calls
+  - Paper trading validation (10+ simulated trades)
+  - Risk Governor integration testing
+
+**Operational Notes:**
+- All LLM provider keys must be configured (fail-closed policy)
+- Circuit breaker state: NORMAL (default)
+- No drift sweeps detected
+- Budget tracking enabled for all 4 categories

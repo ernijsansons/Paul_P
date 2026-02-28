@@ -2,10 +2,11 @@
  * Paul P - Kalshi RSA-PSS Authentication
  *
  * Kalshi requires RSA-PSS signatures on trading endpoints
- * Headers: x-kalshi-api-key, x-kalshi-signature, x-kalshi-timestamp
+ * Headers: KALSHI-ACCESS-KEY, KALSHI-ACCESS-SIGNATURE, KALSHI-ACCESS-TIMESTAMP
  * Signature: RSA-PSS(SHA-256) over: timestamp + method + path + body
  */
 
+import { constants as cryptoConstants, sign as nodeSign } from 'node:crypto';
 import type { Env } from '../../types/env';
 import { Result, Ok, Err } from '../../types/env';
 
@@ -19,61 +20,37 @@ export async function generateKalshiAuthHeaders(
   body?: string
 ): Promise<Result<Record<string, string>, Error>> {
   try {
-    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const apiKey = env.KALSHI_API_KEY?.trim();
+    if (!apiKey) {
+      return Err(new Error('KALSHI_API_KEY not configured'));
+    }
 
-    // Construct the message to sign: timestamp + method + path + body
-    const message = timestamp + method.toUpperCase() + path + (body ?? '');
-
-    // Import the private key
-    const privateKeyPem = env.KALSHI_PRIVATE_KEY;
+    const privateKeyPem = env.KALSHI_PRIVATE_KEY?.trim();
     if (!privateKeyPem) {
       return Err(new Error('KALSHI_PRIVATE_KEY not configured'));
     }
 
-    // Parse PEM to get raw key bytes
-    const pemContents = privateKeyPem
-      .replace('-----BEGIN PRIVATE KEY-----', '')
-      .replace('-----END PRIVATE KEY-----', '')
-      .replace('-----BEGIN RSA PRIVATE KEY-----', '')
-      .replace('-----END RSA PRIVATE KEY-----', '')
-      .replace(/\s/g, '');
+    // Kalshi expects millisecond epoch timestamps.
+    const timestamp = Date.now().toString();
 
-    const keyBytes = Uint8Array.from(atob(pemContents), (c) => c.charCodeAt(0));
+    // Construct the message to sign: timestamp + method + path + body
+    const message = timestamp + method.toUpperCase() + path + (body ?? '');
 
-    // Import as CryptoKey for RSA-PSS
-    const privateKey = await crypto.subtle.importKey(
-      'pkcs8',
-      keyBytes,
+    const signature = nodeSign(
+      'sha256',
+      Buffer.from(message, 'utf8'),
       {
-        name: 'RSA-PSS',
-        hash: 'SHA-256',
-      },
-      false,
-      ['sign']
+        key: privateKeyPem,
+        padding: cryptoConstants.RSA_PKCS1_PSS_PADDING,
+        saltLength: 32,
+      }
     );
-
-    // Sign the message using RSA-PSS with SHA-256
-    const encoder = new TextEncoder();
-    const messageBytes = encoder.encode(message);
-
-    const signature = await crypto.subtle.sign(
-      {
-        name: 'RSA-PSS',
-        saltLength: 32, // SHA-256 output length
-      },
-      privateKey,
-      messageBytes
-    );
-
-    // Encode signature as base64
-    const signatureBase64 = btoa(
-      String.fromCharCode(...new Uint8Array(signature))
-    );
+    const signatureBase64 = signature.toString('base64');
 
     return Ok({
-      'x-kalshi-api-key': env.KALSHI_API_KEY,
-      'x-kalshi-timestamp': timestamp,
-      'x-kalshi-signature': signatureBase64,
+      'KALSHI-ACCESS-KEY': apiKey,
+      'KALSHI-ACCESS-TIMESTAMP': timestamp,
+      'KALSHI-ACCESS-SIGNATURE': signatureBase64,
     });
   } catch (error) {
     return Err(error instanceof Error ? error : new Error(String(error)));
