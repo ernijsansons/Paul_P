@@ -17,7 +17,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResearchEnv } from '../../src/types/env';
-import type { ModelId, ResolvedModelId } from '../../src/lib/llm/routing.types';
+import type { ModelId } from '../../src/lib/llm/routing.types';
 import { executeWithRouting, routeLLMCall } from '../../src/lib/llm/routing.policy';
 import { modelIdToString } from '../../src/lib/llm/routing.types';
 import { hasRecentDriftBlock, recordDriftSweep } from '../../src/lib/llm/drift-sweeps';

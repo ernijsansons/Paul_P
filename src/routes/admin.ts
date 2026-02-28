@@ -881,3 +881,111 @@ adminRoutes.get('/gates/criteria/:phase', async (c) => {
     criteria,
   });
 });
+
+// ============================================================
+// ORCHESTRATOR TRIGGER ENDPOINTS (MANUAL PIPELINE CONTROL)
+// ============================================================
+
+/**
+ * POST /orchestrator/trigger/ingest
+ * Manually trigger market data ingestion (normally runs every 15 min)
+ */
+adminRoutes.post('/orchestrator/trigger/ingest', async (c: AdminContext) => {
+  const orchestratorId = c.env.PAUL_P_ORCHESTRATOR.idFromName('singleton');
+  const orchestrator = c.env.PAUL_P_ORCHESTRATOR.get(orchestratorId);
+
+  const result = await orchestrator.fetch('http://internal/trigger/ingest', {
+    method: 'POST',
+  });
+
+  const data = await result.json();
+  return c.json({
+    success: true,
+    trigger: 'ingest',
+    triggeredBy: c.get('adminUser') ?? 'admin',
+    timestamp: new Date().toISOString(),
+    result: data,
+  });
+});
+
+/**
+ * POST /orchestrator/trigger/scan
+ * Manually trigger signal scanning (normally runs every 10 min)
+ */
+adminRoutes.post('/orchestrator/trigger/scan', async (c: AdminContext) => {
+  const orchestratorId = c.env.PAUL_P_ORCHESTRATOR.idFromName('singleton');
+  const orchestrator = c.env.PAUL_P_ORCHESTRATOR.get(orchestratorId);
+
+  const result = await orchestrator.fetch('http://internal/trigger/scan', {
+    method: 'POST',
+  });
+
+  const data = await result.json();
+  return c.json({
+    success: true,
+    trigger: 'scan',
+    triggeredBy: c.get('adminUser') ?? 'admin',
+    timestamp: new Date().toISOString(),
+    result: data,
+  });
+});
+
+/**
+ * POST /orchestrator/trigger/execute
+ * Manually trigger signal execution (normally runs every 10 min offset by 2)
+ */
+adminRoutes.post('/orchestrator/trigger/execute', async (c: AdminContext) => {
+  const orchestratorId = c.env.PAUL_P_ORCHESTRATOR.idFromName('singleton');
+  const orchestrator = c.env.PAUL_P_ORCHESTRATOR.get(orchestratorId);
+
+  const result = await orchestrator.fetch('http://internal/trigger/execute', {
+    method: 'POST',
+  });
+
+  const data = await result.json();
+  return c.json({
+    success: true,
+    trigger: 'execute',
+    triggeredBy: c.get('adminUser') ?? 'admin',
+    timestamp: new Date().toISOString(),
+    result: data,
+  });
+});
+
+/**
+ * POST /orchestrator/trigger/reconcile
+ * Manually trigger reconciliation (normally runs every 5 min)
+ */
+adminRoutes.post('/orchestrator/trigger/reconcile', async (c: AdminContext) => {
+  const orchestratorId = c.env.PAUL_P_ORCHESTRATOR.idFromName('singleton');
+  const orchestrator = c.env.PAUL_P_ORCHESTRATOR.get(orchestratorId);
+
+  const result = await orchestrator.fetch('http://internal/trigger/reconcile', {
+    method: 'POST',
+  });
+
+  const data = await result.json();
+  return c.json({
+    success: true,
+    trigger: 'reconcile',
+    triggeredBy: c.get('adminUser') ?? 'admin',
+    timestamp: new Date().toISOString(),
+    result: data,
+  });
+});
+
+/**
+ * GET /orchestrator/orders
+ * Get order lifecycle from orchestrator DO
+ */
+adminRoutes.get('/orchestrator/orders', async (c: AdminContext) => {
+  const orchestratorId = c.env.PAUL_P_ORCHESTRATOR.idFromName('singleton');
+  const orchestrator = c.env.PAUL_P_ORCHESTRATOR.get(orchestratorId);
+
+  const result = await orchestrator.fetch('http://internal/workflow/orders', {
+    method: 'GET',
+  });
+
+  const data = await result.json();
+  return c.json(data);
+});

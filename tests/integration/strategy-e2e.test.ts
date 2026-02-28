@@ -11,7 +11,7 @@
  * @see P-07 — LLM Governance
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
   createOrderLifecycle,
@@ -19,8 +19,6 @@ import {
   stepPreTradeCheck,
   stepApplyRiskResult,
   stepApplyExecutionResult,
-  stepReconcile,
-  stepArchive,
   isTerminalState,
   type OrderLifecycle,
   type WorkflowContext,
@@ -30,7 +28,6 @@ import {
   filterBondCandidates,
   allocateBarbell,
   validateBarbellAllocation,
-  type BarbellConfig,
 } from '../../src/lib/strategy/barbell';
 
 import {
@@ -107,7 +104,7 @@ function runOrderThroughLifecycle(
     executionTimeMs: 50,
     paperFill: executionSuccess ? {
       orderId: ctx.order.orderId,
-      ticker: ctx.order.marketId,
+      ticker: ctx.order.ticker,
       side: ctx.order.side.toLowerCase() as 'yes' | 'no',
       action: 'buy',
       count: ctx.order.requestedSize,
@@ -170,7 +167,7 @@ describe('Bonding Strategy E2E', () => {
       Math.floor(topBond.allocation / 0.95), // Size based on allocation
       95, // Max price (95 cents for 95% probability)
       topBond.probability,
-      topBond.expectedYield,
+      topBond.expectedReturn,
       0.85
     );
 
@@ -375,7 +372,7 @@ describe('Weather Strategy E2E', () => {
     expect(parsed.score).toBeLessThan(0.4); // Below ambiguity threshold
 
     // Order can proceed with fallback provider
-    const order = createOrderLifecycle(
+    const _order = createOrderLifecycle(
       'signal-llm-fallback',
       'weather',
       'WEATHER-MARKET',
@@ -386,6 +383,7 @@ describe('Weather Strategy E2E', () => {
       0.08,
       parsed.confidence
     );
+    void _order; // Intentionally unused - testing LLM fallback, not order execution
 
     // Risk check should pass (low ambiguity)
     const riskRequest = createRiskRequest({
@@ -477,6 +475,8 @@ describe('Risk Governor Integration', () => {
     const warningIds = warnings.map(w => w.id);
     // At least one warning should be present
     expect(results.filter(r => r.severity === 'warning').length).toBeGreaterThan(0);
+    // Verify warning IDs are properly formatted
+    expect(warningIds.every(id => id.startsWith('I'))).toBe(true);
   });
 
   it('fails closed on invalid input', () => {

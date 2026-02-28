@@ -19,9 +19,21 @@ import { env } from 'cloudflare:test';
 import {
   storeEvidence,
   retrieveEvidence,
-  decompressData,
 } from '../../src/lib/evidence/store';
 import { sha256 } from '../../src/lib/evidence/hasher';
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+/**
+ * Convert string to ArrayBuffer (proper type for test usage)
+ */
+function toArrayBuffer(data: string): ArrayBuffer {
+  const encoded = new TextEncoder().encode(data);
+  // Use slice and cast to get a proper ArrayBuffer (not ArrayBufferLike)
+  return encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer;
+}
 
 // ============================================================
 // TEST SETUP
@@ -74,7 +86,7 @@ describe('Evidence-First Pattern Integration', () => {
         markets: [{ id: 'market-1', price: 0.65 }],
         timestamp: new Date().toISOString(),
       });
-      const rawBytes = new TextEncoder().encode(testData).buffer;
+      const rawBytes = toArrayBuffer(testData);
       const fetchedAt = new Date().toISOString();
 
       const result = await storeEvidence(env, {
@@ -102,7 +114,7 @@ describe('Evidence-First Pattern Integration', () => {
 
     it('stores evidence with request metadata', async () => {
       const testData = JSON.stringify({ event: 'test' });
-      const rawBytes = new TextEncoder().encode(testData).buffer;
+      const rawBytes = toArrayBuffer(testData);
       const fetchedAt = new Date().toISOString();
 
       const result = await storeEvidence(env, {
@@ -139,7 +151,7 @@ describe('Evidence-First Pattern Integration', () => {
   describe('SHA-256 Hash Computation', () => {
     it('computes correct SHA-256 hash of raw bytes', async () => {
       const testData = 'hello world evidence test';
-      const rawBytes = new TextEncoder().encode(testData).buffer;
+      const rawBytes = toArrayBuffer(testData);
       const fetchedAt = new Date().toISOString();
 
       // Compute expected hash manually
@@ -160,7 +172,7 @@ describe('Evidence-First Pattern Integration', () => {
 
     it('indexes evidence hash in D1 evidence_blobs table', async () => {
       const testData = JSON.stringify({ indexed: true, time: Date.now() });
-      const rawBytes = new TextEncoder().encode(testData).buffer;
+      const rawBytes = toArrayBuffer(testData);
       const fetchedAt = new Date().toISOString();
 
       const result = await storeEvidence(env, {
@@ -209,7 +221,7 @@ describe('Evidence-First Pattern Integration', () => {
           data: 'repeated_'.repeat(5),
         })),
       });
-      const rawBytes = new TextEncoder().encode(compressibleData).buffer;
+      const rawBytes = toArrayBuffer(compressibleData);
       const fetchedAt = new Date().toISOString();
 
       const result = await storeEvidence(env, {
@@ -234,7 +246,7 @@ describe('Evidence-First Pattern Integration', () => {
         test: 'roundtrip',
         values: [1, 2, 3],
       });
-      const rawBytes = new TextEncoder().encode(originalData).buffer;
+      const rawBytes = toArrayBuffer(originalData);
       const fetchedAt = new Date().toISOString();
 
       // Store
@@ -267,7 +279,7 @@ describe('Evidence-First Pattern Integration', () => {
     it('stores malformed JSON evidence successfully before parse would fail', async () => {
       // This is intentionally malformed JSON
       const malformedData = '{ "incomplete": true, "missing_bracket": ';
-      const rawBytes = new TextEncoder().encode(malformedData).buffer;
+      const rawBytes = toArrayBuffer(malformedData);
       const fetchedAt = new Date().toISOString();
 
       // Store should succeed (we're just storing raw bytes, not parsing)
@@ -299,7 +311,7 @@ describe('Evidence-First Pattern Integration', () => {
 
     it('evidence stored before any processing logic runs', async () => {
       const testData = JSON.stringify({ data: 'valid' });
-      const rawBytes = new TextEncoder().encode(testData).buffer;
+      const rawBytes = toArrayBuffer(testData);
       const fetchedAt = new Date().toISOString();
 
       // Track R2 put timing
@@ -317,6 +329,7 @@ describe('Evidence-First Pattern Integration', () => {
       r2PutTime = Date.now();
 
       expect(result.ok).toBe(true);
+      if (!result.ok) return;
 
       // Simulate parsing happening AFTER storage
       const retrieveResult = await retrieveEvidence(env, result.value.evidenceHash);
@@ -351,7 +364,7 @@ describe('Evidence-First Pattern Integration', () => {
         unique: 'dedup-test-data',
         timestamp: '2025-01-01T00:00:00Z', // Fixed timestamp for determinism
       });
-      const rawBytes = new TextEncoder().encode(testData).buffer;
+      const rawBytes = toArrayBuffer(testData);
       const fetchedAt = '2025-01-15T12:00:00Z';
 
       // First storage
@@ -401,14 +414,14 @@ describe('Evidence-First Pattern Integration', () => {
       const result1 = await storeEvidence(env, {
         source: 'test-unique',
         endpoint: '/unique',
-        rawBytes: new TextEncoder().encode(data1).buffer,
+        rawBytes: toArrayBuffer(data1),
         fetchedAt,
       });
 
       const result2 = await storeEvidence(env, {
         source: 'test-unique',
         endpoint: '/unique',
-        rawBytes: new TextEncoder().encode(data2).buffer,
+        rawBytes: toArrayBuffer(data2),
         fetchedAt,
       });
 
@@ -455,7 +468,7 @@ describe('Evidence-First Pattern Integration', () => {
 
     it('verifies hash matches after retrieval', async () => {
       const testData = JSON.stringify({ integrity: 'check', data: [1, 2, 3] });
-      const rawBytes = new TextEncoder().encode(testData).buffer;
+      const rawBytes = toArrayBuffer(testData);
       const fetchedAt = new Date().toISOString();
 
       const storeResult = await storeEvidence(env, {
@@ -480,7 +493,7 @@ describe('Evidence-First Pattern Integration', () => {
 
     it('stores custom metadata in R2 object', async () => {
       const testData = JSON.stringify({ metadata: 'test' });
-      const rawBytes = new TextEncoder().encode(testData).buffer;
+      const rawBytes = toArrayBuffer(testData);
       const fetchedAt = new Date().toISOString();
 
       const result = await storeEvidence(env, {
