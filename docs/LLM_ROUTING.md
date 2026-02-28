@@ -179,7 +179,7 @@ The routing layer resolves WHICH model. The dispatch layer handles HOW.
 |----------|-----------|------|----------|---------|
 | Anthropic | Messages API | x-api-key header | api.anthropic.com/v1/messages | 60s |
 | MiniMax | OpenAI-compatible | Bearer token | api.minimax.chat/v1/text/chatcompletion_v2 | 30s |
-| Moonshot | OpenAI-compatible | Bearer token | api.moonshot.cn/v1/chat/completions | 60s |
+| Moonshot | OpenAI-compatible | Bearer token | api.moonshot.ai/v1/chat/completions | 60s |
 | Google | Gemini REST | API key in URL | generativelanguage.googleapis.com/v1beta | 30s |
 | Cloudflare | Workers AI binding | env.AI.run | N/A (local) | N/A |
 

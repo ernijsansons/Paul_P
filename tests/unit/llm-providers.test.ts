@@ -244,7 +244,7 @@ describe('Provider Dispatch Routing', () => {
     await dispatchLLMRequest(request, ALL_KEYS);
 
     expect(fetch).toHaveBeenCalledWith(
-      'https://api.moonshot.cn/v1/chat/completions',
+      'https://api.moonshot.ai/v1/chat/completions',
       expect.any(Object)
     );
   });
