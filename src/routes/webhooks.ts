@@ -8,6 +8,52 @@ import type { Env } from '../types/env';
 
 export const webhookRoutes = new Hono<{ Bindings: Env }>();
 
+function getBearerToken(authHeader: string | undefined): string | null {
+  if (!authHeader?.startsWith('Bearer ')) {
+    return null;
+  }
+  return authHeader.slice(7);
+}
+
+// Manual trigger routes must always be authenticated.
+webhookRoutes.use('/trigger/*', async (c, next) => {
+  const expectedToken = c.env.WEBHOOK_TRIGGER_TOKEN ?? c.env.ADMIN_TOKEN;
+  if (!expectedToken) {
+    return c.json({
+      error: 'Configuration error',
+      message: 'WEBHOOK_TRIGGER_TOKEN (or ADMIN_TOKEN fallback) is not configured',
+    }, 503);
+  }
+
+  const providedToken = getBearerToken(c.req.header('authorization'));
+  if (!providedToken || providedToken !== expectedToken) {
+    return c.json({ error: 'Unauthorized', message: 'Invalid webhook trigger token' }, 401);
+  }
+
+  return next();
+});
+
+// Kalshi relay ingress must be protected by shared secret.
+webhookRoutes.use('/kalshi/events', async (c, next) => {
+  const expectedSecret = c.env.KALSHI_WEBHOOK_SECRET ?? c.env.WEBHOOK_SHARED_SECRET;
+  if (!expectedSecret) {
+    return c.json({
+      error: 'Configuration error',
+      message: 'KALSHI_WEBHOOK_SECRET (or WEBHOOK_SHARED_SECRET fallback) is not configured',
+    }, 503);
+  }
+
+  const providedSecret =
+    c.req.header('x-kalshi-webhook-secret')
+    ?? c.req.header('x-webhook-secret');
+
+  if (!providedSecret || providedSecret !== expectedSecret) {
+    return c.json({ error: 'Unauthorized', message: 'Invalid Kalshi webhook secret' }, 401);
+  }
+
+  return next();
+});
+
 /**
  * Kalshi WebSocket relay endpoint
  * Used by external WebSocket listener to push order/fill events

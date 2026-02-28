@@ -7,17 +7,124 @@
  *
  * Auth methods supported:
  * 1. Bearer token: Authorization: Bearer <ADMIN_TOKEN>
- * 2. Cloudflare Access: cf-access-authenticated-user-email header
+ * 2. Cloudflare Access headers:
+ *    - cf-access-authenticated-user-email
+ *    - cf-access-jwt-assertion
+ *
+ * Optional hardening:
+ * - ADMIN_ALLOWED_EMAILS: comma-separated email allowlist for Access users
+ * - ADMIN_ALLOWED_IPS: comma-separated IP allowlist for admin ingress
+ * - ADMIN_TURNSTILE_SECRET: require valid Turnstile token for mutating requests
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import type { Env } from '../types/env';
+import { hasRecentDriftBlock } from '../lib/llm/drift-sweeps';
 
 type Variables = {
   adminUser: string;
 };
 
 export const adminRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
+type AdminContext = Context<{ Bindings: Env; Variables: Variables }>;
+
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+interface TurnstileVerifyResponse {
+  success: boolean;
+  ['error-codes']?: string[];
+}
+
+function getBearerToken(authHeader: string | undefined): string | null {
+  if (!authHeader?.startsWith('Bearer ')) {
+    return null;
+  }
+  return authHeader.slice(7);
+}
+
+function parseAllowlist(raw: string | undefined): Set<string> {
+  if (!raw) {
+    return new Set();
+  }
+  return new Set(
+    raw
+      .split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function checkAdminIpAllowlist(c: AdminContext): { ok: boolean; reason?: string } {
+  const allowedIps = parseAllowlist(c.env.ADMIN_ALLOWED_IPS);
+  if (allowedIps.size === 0) {
+    return { ok: true };
+  }
+
+  const clientIp = c.req.header('cf-connecting-ip')?.trim();
+  if (!clientIp) {
+    return { ok: false, reason: 'Client IP unavailable for allowlist check' };
+  }
+
+  if (!allowedIps.has(clientIp)) {
+    return { ok: false, reason: 'Client IP is not in admin allowlist' };
+  }
+
+  return { ok: true };
+}
+
+async function verifyTurnstileIfRequired(c: AdminContext): Promise<{ ok: boolean; reason?: string }> {
+  if (!STATE_CHANGING_METHODS.has(c.req.method)) {
+    return { ok: true };
+  }
+
+  const turnstileSecret = c.env.ADMIN_TURNSTILE_SECRET;
+  if (!turnstileSecret) {
+    return { ok: true };
+  }
+
+  const token =
+    c.req.header('cf-turnstile-response')
+    ?? c.req.header('x-turnstile-token');
+
+  if (!token) {
+    return { ok: false, reason: 'Turnstile token required for mutating admin requests' };
+  }
+
+  const body = new URLSearchParams({
+    secret: turnstileSecret,
+    response: token,
+  });
+
+  const clientIp = c.req.header('cf-connecting-ip');
+  if (clientIp) {
+    body.set('remoteip', clientIp);
+  }
+
+  try {
+    const response = await fetch(
+      'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+      {
+        method: 'POST',
+        body,
+      }
+    );
+
+    if (!response.ok) {
+      return { ok: false, reason: 'Turnstile verification service unavailable' };
+    }
+
+    const result = await response.json<TurnstileVerifyResponse>();
+    if (!result.success) {
+      const errorCodes = result['error-codes']?.join(', ') ?? 'invalid_token';
+      return { ok: false, reason: `Turnstile verification failed (${errorCodes})` };
+    }
+
+    return { ok: true };
+  } catch (error) {
+    console.error('Turnstile verification error:', error);
+    return { ok: false, reason: 'Turnstile verification failed' };
+  }
+}
 
 /**
  * Authentication middleware
@@ -26,32 +133,63 @@ export const adminRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
  * - Cloudflare Access authenticated user (via cf-access headers)
  */
 adminRoutes.use('*', async (c, next) => {
-  const authHeader = c.req.header('Authorization');
+  const authHeader = c.req.header('authorization');
+  const bearerToken = getBearerToken(authHeader);
   const cfAccessUser = c.req.header('cf-access-authenticated-user-email');
+  const cfAccessJwt = c.req.header('cf-access-jwt-assertion');
+  const adminToken = c.env.ADMIN_TOKEN;
 
-  // Check Cloudflare Access authentication
-  if (cfAccessUser) {
-    // Valid Cloudflare Access session - allow through
-    c.set('adminUser', cfAccessUser);
+  // Prefer explicit bearer authentication when configured.
+  if (adminToken && bearerToken === adminToken) {
+    const ipAllowlist = checkAdminIpAllowlist(c);
+    if (!ipAllowlist.ok) {
+      return c.json({ error: 'Forbidden', message: ipAllowlist.reason }, 403);
+    }
+
+    c.set('adminUser', 'api-token-user');
+    const turnstile = await verifyTurnstileIfRequired(c);
+    if (!turnstile.ok) {
+      return c.json({ error: 'Unauthorized', message: turnstile.reason }, 401);
+    }
     return next();
   }
 
-  // Check Bearer token authentication
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    const adminToken = (c.env as { ADMIN_TOKEN?: string }).ADMIN_TOKEN;
-
-    if (adminToken && token === adminToken) {
-      c.set('adminUser', 'api-token-user');
-      return next();
+  // Cloudflare Access authentication path.
+  if (cfAccessUser) {
+    if (!cfAccessJwt) {
+      return c.json({
+        error: 'Unauthorized',
+        message: 'Cloudflare Access JWT assertion is required',
+      }, 401);
     }
+
+    const allowedEmails = parseAllowlist(c.env.ADMIN_ALLOWED_EMAILS);
+    if (allowedEmails.size > 0 && !allowedEmails.has(cfAccessUser.toLowerCase())) {
+      return c.json({
+        error: 'Forbidden',
+        message: 'Authenticated user is not allowed for admin access',
+      }, 403);
+    }
+
+    const ipAllowlist = checkAdminIpAllowlist(c);
+    if (!ipAllowlist.ok) {
+      return c.json({ error: 'Forbidden', message: ipAllowlist.reason }, 403);
+    }
+
+    c.set('adminUser', cfAccessUser);
+    const turnstile = await verifyTurnstileIfRequired(c);
+    if (!turnstile.ok) {
+      return c.json({ error: 'Unauthorized', message: turnstile.reason }, 401);
+    }
+    return next();
   }
 
   // No valid authentication
   return c.json(
     {
       error: 'Unauthorized',
-      message: 'Admin routes require authentication via Bearer token or Cloudflare Access',
+      message:
+        'Admin routes require Authorization bearer token or Cloudflare Access (email + JWT headers)',
     },
     401
   );
@@ -234,13 +372,9 @@ adminRoutes.post('/strategies/:id/go-live', async (c) => {
     return c.json({ error: 'Valid capital allocation required' }, 400);
   }
 
-  // Check for blocked LLM drift sweeps
-  const driftSweep = await c.env.DB.prepare(`
-    SELECT COUNT(*) as blocked FROM llm_drift_sweeps
-    WHERE blocked_deployment = 1 AND run_at > datetime('now', '-7 days')
-  `).first<{ blocked: number }>();
-
-  if ((driftSweep?.blocked ?? 0) > 0) {
+  // Check for blocked LLM drift sweeps (supports both drift schemas)
+  const driftBlocked = await hasRecentDriftBlock(c.env, 7);
+  if (driftBlocked) {
     return c.json({
       error: 'Deployment blocked by LLM drift sweep',
       message: 'Recent drift sweep flagged deployment. Resolve before go-live.',
@@ -408,7 +542,7 @@ adminRoutes.post('/reconcile', async (c) => {
  * Get audit chain status
  */
 adminRoutes.get('/audit/status', async (c) => {
-  const latestAnchor = await c.env.DB.prepare(`
+  const latestAnchor = await c.env.DB_ANCHOR.prepare(`
     SELECT * FROM audit_chain_anchors
     ORDER BY anchor_timestamp DESC
     LIMIT 1

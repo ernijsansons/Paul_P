@@ -70,6 +70,18 @@ export interface LLMScoringRun {
   createdAt: string;
 }
 
+/**
+ * Storage compatibility mapping:
+ * legacy schemas constrain rule interpretation runs to `rule_interpretation`.
+ */
+const STORAGE_RUN_TYPE_ALIASES: Partial<Record<LLMScoringRunType, string>> = {
+  invariant_explanation: 'rule_interpretation',
+};
+
+function toStorageRunType(runType: LLMScoringRunType): string {
+  return STORAGE_RUN_TYPE_ALIASES[runType] ?? runType;
+}
+
 // ============================================================
 // MAIN SCORING FUNCTIONS
 // ============================================================
@@ -235,7 +247,7 @@ async function storeScoringRun(env: ResearchEnv, run: LLMScoringRun): Promise<vo
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     run.id,
-    run.runType,
+    toStorageRunType(run.runType),
     run.targetEntityType,
     run.targetEntityId,
     run.promptTemplateVersion,

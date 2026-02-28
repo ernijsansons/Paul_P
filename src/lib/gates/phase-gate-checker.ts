@@ -13,6 +13,7 @@
 
 import type { Env } from '../../types/env';
 import { deterministicId } from '../utils/deterministic-id';
+import { getLatestDriftDecision } from '../llm/drift-sweeps';
 
 // ============================================================
 // TYPES
@@ -481,8 +482,9 @@ export async function checkPhase2Gate(env: Env): Promise<PhaseGateResult> {
 
   // P2_MARKET_PAIRING_WORKING
   const canonicalPairs = await env.DB.prepare(`
-    SELECT COUNT(*) as count FROM canonical_pairs
-    WHERE equivalence_grade IN ('equivalent', 'near_equivalent')
+    SELECT COUNT(*) as count FROM market_pairs
+    WHERE status = 'approved'
+      AND equivalence_grade IN ('identical', 'near_equivalent')
   `).first<{ count: number }>();
   results.push({
     criterionId: 'P2_MARKET_PAIRING_WORKING',
@@ -505,9 +507,21 @@ export async function checkPhase3Gate(env: Env): Promise<PhaseGateResult> {
 
   // P3_AUDIT_CHAIN_INTEGRITY - Verify audit chain
   const auditChainValid = await env.DB.prepare(`
-    SELECT COUNT(*) as broken FROM audit_trail a1
-    JOIN audit_trail a2 ON a1.sequence_num = a2.sequence_num - 1
-    WHERE a2.prev_hash != a1.current_hash
+    SELECT COUNT(*) as broken
+    FROM (
+      SELECT
+        event_sequence,
+        prev_hash,
+        hash,
+        LAG(event_sequence) OVER (ORDER BY event_sequence) as prev_seq,
+        LAG(hash) OVER (ORDER BY event_sequence) as prev_event_hash
+      FROM audit_chain_events
+    )
+    WHERE prev_seq IS NOT NULL
+      AND (
+        event_sequence != prev_seq + 1
+        OR prev_hash != prev_event_hash
+      )
   `).first<{ broken: number }>();
   results.push({
     criterionId: 'P3_AUDIT_CHAIN_INTEGRITY',
@@ -523,8 +537,8 @@ export async function checkPhase3Gate(env: Env): Promise<PhaseGateResult> {
     SELECT
       COUNT(*) as total,
       SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed
-    FROM llm_regression_results
-    WHERE run_at > datetime('now', '-7 days')
+    FROM llm_regression_tests
+    WHERE COALESCE(run_at, created_at) > datetime('now', '-7 days')
   `).first<{ total: number; passed: number }>();
   const passRate = llmResults?.total ? (llmResults.passed / llmResults.total) * 100 : 0;
   results.push({
@@ -541,8 +555,8 @@ export async function checkPhase3Gate(env: Env): Promise<PhaseGateResult> {
     SELECT
       COUNT(*) as total,
       SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed
-    FROM llm_regression_results
-    WHERE category = 'prompt_injection'
+    FROM llm_regression_tests
+    WHERE test_category IN ('prompt_injection', 'adversarial')
   `).first<{ total: number; passed: number }>();
   const adversarialPass = adversarialResults?.total ? adversarialResults.passed === adversarialResults.total : true;
   results.push({
@@ -652,16 +666,13 @@ export async function checkPhase4Gate(env: Env): Promise<PhaseGateResult> {
   });
 
   // P4_DRIFT_SWEEP_PASSED
-  const driftSweep = await env.DB.prepare(`
-    SELECT deploy_allowed FROM llm_drift_sweeps
-    ORDER BY sweep_at DESC LIMIT 1
-  `).first<{ deploy_allowed: number }>();
+  const driftSweepAllowed = await getLatestDriftDecision(env);
   results.push({
     criterionId: 'P4_DRIFT_SWEEP_PASSED',
-    passed: driftSweep?.deploy_allowed === 1,
-    actualValue: driftSweep?.deploy_allowed === 1 ? 'PASSED' : 'FAILED or NOT RUN',
+    passed: driftSweepAllowed === true,
+    actualValue: driftSweepAllowed === true ? 'PASSED' : 'FAILED or NOT RUN',
     expectedValue: 'PASSED',
-    message: driftSweep?.deploy_allowed === 1 ? 'Latest drift sweep passed' : 'Drift sweep failed or not run',
+    message: driftSweepAllowed === true ? 'Latest drift sweep passed' : 'Drift sweep failed or not run',
     checkedAt,
   });
 

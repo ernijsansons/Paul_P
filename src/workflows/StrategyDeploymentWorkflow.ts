@@ -10,6 +10,7 @@
  */
 
 import type { Env } from '../types/env';
+import { hasRecentDriftBlock } from '../lib/llm/drift-sweeps';
 
 // ============================================================
 // Types
@@ -653,16 +654,10 @@ export class StrategyDeploymentWorkflow {
 
   private async checkLLMDriftSweep(): Promise<boolean> {
     try {
-      // Check for blocked deployment flags in recent drift sweeps
-      // Using run_at column from 0005_llm_governance.sql schema
-      const result = await this.env.DB.prepare(`
-        SELECT COUNT(*) as blocked FROM llm_drift_sweeps
-        WHERE blocked_deployment = 1
-        AND run_at > datetime('now', '-7 days')
-      `).first<{ blocked: number }>();
-
-      // If there are any blocked sweeps in the last 7 days, fail
-      return (result?.blocked ?? 0) === 0;
+      // Check for blocked deployment flags in recent drift sweeps.
+      // Supports both schema variants.
+      const hasBlock = await hasRecentDriftBlock(this.env, 7);
+      return !hasBlock;
     } catch (error) {
       console.error('Error checking LLM drift sweep:', error);
       // Default to false (blocked) on error for safety

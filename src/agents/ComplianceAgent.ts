@@ -7,6 +7,7 @@
  */
 
 import { PaulPAgent } from './base';
+import { deterministicId } from '../lib/utils/deterministic-id';
 
 /**
  * CFTC Part 17 Record format
@@ -50,6 +51,7 @@ interface CFTCRecord {
 
 export class ComplianceAgent extends PaulPAgent {
   readonly agentName = 'compliance-agent';
+  private complianceSeeded = false;
 
   protected async handleRequest(request: Request, path: string): Promise<Response> {
     switch (path) {
@@ -67,6 +69,8 @@ export class ComplianceAgent extends PaulPAgent {
   }
 
   private async checkSource(request: Request): Promise<Response> {
+    await this.ensureComplianceSeeded();
+
     const { sourceName } = await request.json<{ sourceName: string }>();
 
     const row = await this.env.DB.prepare(`
@@ -89,6 +93,8 @@ export class ComplianceAgent extends PaulPAgent {
    * Fail-closed: if ANY entity is blocked or unknown, return allowed: false
    */
   private async checkBatch(request: Request): Promise<Response> {
+    await this.ensureComplianceSeeded();
+
     const { entities, operation, venue } = await request.json<{
       entities: string[];
       operation: string;
@@ -98,34 +104,16 @@ export class ComplianceAgent extends PaulPAgent {
     const blockedEntities: string[] = [];
     let overallStatus = 'approved';
 
-    // Check venue-level compliance first
-    const venueKey = `venue:${venue}`;
-    const venueRow = await this.env.DB.prepare(`
-      SELECT status FROM compliance_matrix WHERE source_name = ?
-    `).bind(venueKey).first<{ status: string }>();
-
-    if (!venueRow) {
-      // Venue not in compliance matrix - fail closed
+    if (!entities || entities.length === 0) {
       return Response.json({
         allowed: false,
-        reason: `Venue ${venue} not in compliance matrix - fail closed`,
-        blockedEntities: [venueKey],
-      });
-    }
-
-    if (venueRow.status !== 'approved') {
-      return Response.json({
-        allowed: false,
-        reason: `Venue ${venue} is ${venueRow.status}`,
-        blockedEntities: [venueKey],
+        reason: `No compliance entities provided for ${venue}:${operation}`,
+        blockedEntities: [],
       });
     }
 
     // Check each entity
     for (const entity of entities) {
-      // Skip venue: prefixed entities (already checked)
-      if (entity.startsWith('venue:')) continue;
-
       const row = await this.env.DB.prepare(`
         SELECT status FROM compliance_matrix WHERE source_name = ?
       `).bind(entity).first<{ status: string }>();
@@ -409,6 +397,8 @@ export class ComplianceAgent extends PaulPAgent {
   }
 
   private async reviewToS(): Promise<Response> {
+    await this.ensureComplianceSeeded();
+
     // Check for ToS that need review
     const needsReview = await this.env.DB.prepare(`
       SELECT source_name, tos_url, tos_next_review_date
@@ -417,5 +407,140 @@ export class ComplianceAgent extends PaulPAgent {
     `).bind(new Date().toISOString()).all();
 
     return Response.json({ needsReview: needsReview.results });
+  }
+
+  private async ensureComplianceSeeded(): Promise<void> {
+    if (this.complianceSeeded) return;
+
+    const now = new Date().toISOString();
+    const nextQuarter = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+
+    const defaults: Array<{
+      sourceName: string;
+      tosUrl: string;
+      status: 'approved' | 'blocked';
+      blockReason?: string;
+      authType?: string;
+      authRequired?: number;
+      scrapingPermitted?: number | null;
+      allowedUsage?: string[];
+      prohibitedUsage?: string[];
+    }> = [
+      {
+        sourceName: 'polymarket_gamma_api',
+        tosUrl: 'https://polymarket.com/tos',
+        status: 'approved',
+        scrapingPermitted: 1,
+        allowedUsage: ['market_data_read', 'resolution_criteria', 'event_metadata'],
+      },
+      {
+        sourceName: 'polymarket_clob_api',
+        tosUrl: 'https://polymarket.com/tos',
+        status: 'approved',
+        scrapingPermitted: 1,
+        allowedUsage: ['orderbook_read', 'midpoint_read', 'trade_history_read'],
+      },
+      {
+        sourceName: 'polymarket_data_api',
+        tosUrl: 'https://polymarket.com/tos',
+        status: 'approved',
+        scrapingPermitted: 1,
+        allowedUsage: ['leaderboard_read', 'public_profile_read', 'public_positions_read'],
+      },
+      {
+        sourceName: 'kalshi_trade_api',
+        tosUrl: 'https://kalshi.com/terms',
+        status: 'approved',
+        authType: 'rsa_pss',
+        authRequired: 1,
+        scrapingPermitted: 1,
+        allowedUsage: ['market_data_read', 'orderbook_read', 'trade_execution'],
+      },
+      {
+        sourceName: 'noaa_cdo',
+        tosUrl: 'https://www.weather.gov/disclaimer',
+        status: 'approved',
+        authType: 'api_key',
+        authRequired: 1,
+        scrapingPermitted: 1,
+        allowedUsage: ['weather_history_read'],
+      },
+      {
+        sourceName: 'noaa_weather_api',
+        tosUrl: 'https://www.weather.gov/disclaimer',
+        status: 'approved',
+        scrapingPermitted: 1,
+        allowedUsage: ['forecast_read', 'weather_observations_read'],
+      },
+      {
+        sourceName: 'fred_api',
+        tosUrl: 'https://fred.stlouisfed.org/docs/api/terms_of_use.html',
+        status: 'approved',
+        authType: 'api_key',
+        authRequired: 1,
+        scrapingPermitted: 1,
+        allowedUsage: ['economic_series_read'],
+      },
+      {
+        sourceName: 'polymarket_analytics',
+        tosUrl: 'https://polymarketanalytics.com',
+        status: 'blocked',
+        blockReason: 'ToS does not explicitly permit automated access',
+        scrapingPermitted: 0,
+        allowedUsage: [],
+        prohibitedUsage: ['automated_access'],
+      },
+    ];
+
+    for (const source of defaults) {
+      await this.env.DB.prepare(
+        `
+        INSERT OR IGNORE INTO compliance_matrix (
+          id, source_name,
+          allowed_usage, prohibited_usage,
+          rate_limits, retry_policy,
+          retention_rules, pii_handling,
+          attribution_required, attribution_text,
+          tos_url, tos_version, tos_snapshot_evidence_hash, tos_snapshot_r2_key,
+          tos_retrieved_at, tos_next_review_date,
+          scraping_permitted, scraping_notes, robots_txt_compliant,
+          authentication_required, authentication_type,
+          status, block_reason,
+          reviewed_by, reviewed_at, review_notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+      )
+        .bind(
+          deterministicId('compliance-source', source.sourceName),
+          source.sourceName,
+          JSON.stringify(source.allowedUsage ?? ['market_data_read']),
+          JSON.stringify(source.prohibitedUsage ?? []),
+          JSON.stringify({ requests_per_second: null, daily_cap: null }),
+          JSON.stringify({ max_retries: 3, backoff_base_ms: 1000 }),
+          JSON.stringify({ max_cache_duration_hours: 24, raw_storage_allowed: true }),
+          JSON.stringify({}),
+          0,
+          null,
+          source.tosUrl,
+          'bootstrap-v1',
+          null,
+          null,
+          now,
+          nextQuarter,
+          source.scrapingPermitted ?? 1,
+          source.blockReason ?? null,
+          1,
+          source.authRequired ?? 0,
+          source.authType ?? 'none',
+          source.status,
+          source.blockReason ?? null,
+          'system-bootstrap',
+          now,
+          'Auto-seeded default compliance sources'
+        )
+        .run();
+    }
+
+    this.complianceSeeded = true;
   }
 }

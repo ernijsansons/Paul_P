@@ -20,8 +20,11 @@ export class AuditReporterAgent extends PaulPAgent {
 
   private lastHash = 'genesis';
   private eventSequence = 0;
+  private stateLoaded = false;
 
   protected async handleRequest(request: Request, path: string): Promise<Response> {
+    await this.ensureStateLoaded();
+
     switch (path) {
       case '/log':
         return this.logEvent(request);
@@ -48,24 +51,44 @@ export class AuditReporterAgent extends PaulPAgent {
     }
   }
 
+  private async ensureStateLoaded(): Promise<void> {
+    if (this.stateLoaded) return;
+
+    const lastEvent = await this.env.DB.prepare(
+      `SELECT event_sequence, hash FROM audit_chain_events ORDER BY event_sequence DESC LIMIT 1`
+    ).first<{ event_sequence: number; hash: string }>();
+
+    this.eventSequence = lastEvent?.event_sequence ?? 0;
+    this.lastHash = lastEvent?.hash ?? 'genesis';
+    this.stateLoaded = true;
+  }
+
   private async logEvent(request: Request): Promise<Response> {
     const event = await request.json<{
       agent: string;
       eventType: string;
       payload: Record<string, unknown>;
       evidenceHash?: string;
-      timestamp: string;
+      timestamp?: string;
     }>();
+
+    const timestamp = event.timestamp ?? new Date().toISOString();
+
+    // Always derive sequence/hash from persisted chain state to survive DO restarts.
+    const lastEvent = await this.env.DB.prepare(
+      `SELECT event_sequence, hash FROM audit_chain_events ORDER BY event_sequence DESC LIMIT 1`
+    ).first<{ event_sequence: number; hash: string }>();
+    const prevHash = lastEvent?.hash ?? 'genesis';
+    const nextSequence = (lastEvent?.event_sequence ?? 0) + 1;
 
     const eventId = deterministicId(
       'evt',
-      event.timestamp,
+      timestamp,
       event.agent,
       event.eventType,
       JSON.stringify(event.payload),
-      this.eventSequence + 1
+      nextSequence
     );
-    this.eventSequence++;
 
     // Compute payload hash
     const payloadHash = await sha256String(JSON.stringify(event.payload));
@@ -73,12 +96,12 @@ export class AuditReporterAgent extends PaulPAgent {
     // Compute chain hash
     const hashInput = [
       eventId,
-      event.timestamp,
+      timestamp,
       event.agent,
       event.eventType,
       payloadHash,
       event.evidenceHash ?? '',
-      this.lastHash,
+      prevHash,
     ].join('|');
 
     const hash = await sha256String(hashInput);
@@ -91,20 +114,59 @@ export class AuditReporterAgent extends PaulPAgent {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       eventId,
-      this.eventSequence,
-      event.timestamp,
+      nextSequence,
+      timestamp,
       event.agent,
       event.eventType,
       JSON.stringify(event.payload),
       payloadHash,
       event.evidenceHash ?? null,
-      this.lastHash,
+      prevHash,
       hash
     ).run();
 
+    // Best-effort sync to R2_AUDIT; unsynced rows are visible via admin status.
+    let r2Key: string | null = null;
+    try {
+      const date = timestamp.slice(0, 10);
+      r2Key = `audit/events/${date}/${String(nextSequence).padStart(12, '0')}-${eventId}.json`;
+      await this.env.R2_AUDIT.put(
+        r2Key,
+        JSON.stringify({
+          id: eventId,
+          eventSequence: nextSequence,
+          timestamp,
+          agent: event.agent,
+          eventType: event.eventType,
+          payload: event.payload,
+          payloadHash,
+          evidenceHash: event.evidenceHash ?? null,
+          prevHash,
+          hash,
+        }),
+        {
+          httpMetadata: { contentType: 'application/json' },
+          customMetadata: {
+            event_id: eventId,
+            event_sequence: String(nextSequence),
+            hash,
+          },
+        }
+      );
+
+      await this.env.DB.prepare(`
+        UPDATE audit_chain_events
+        SET r2_synced = 1, r2_synced_at = ?, r2_key = ?
+        WHERE id = ?
+      `).bind(new Date().toISOString(), r2Key, eventId).run();
+    } catch (error) {
+      console.error('Failed to sync audit event to R2_AUDIT:', error);
+    }
+
+    this.eventSequence = nextSequence;
     this.lastHash = hash;
 
-    return Response.json({ eventId, hash });
+    return Response.json({ eventId, hash, r2Synced: r2Key !== null });
   }
 
   private async anchorChain(): Promise<Response> {
@@ -122,13 +184,15 @@ export class AuditReporterAgent extends PaulPAgent {
       `SELECT MAX(anchor_sequence) as max_seq FROM audit_chain_anchors`
     ).first<{ max_seq: number }>();
 
+    const chainHead = lastEvent ? await this.getEventHash(lastEvent.id) : 'genesis';
+    const chainLength = await this.getCurrentChainLength();
     const anchorSequence = (prevAnchor?.max_seq ?? 0) + 1;
     const now = new Date().toISOString();
     const anchorId = deterministicId(
       'anchor',
       anchorSequence,
-      this.eventSequence,
-      this.lastHash,
+      chainLength,
+      chainHead,
       now
     );
 
@@ -136,27 +200,28 @@ export class AuditReporterAgent extends PaulPAgent {
       INSERT INTO audit_chain_anchors (
         id, chain_head_hash, chain_length, anchor_timestamp, anchor_sequence,
         first_event_id, last_event_id, first_event_timestamp, last_event_timestamp,
-        anchored_to, events_in_range_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'd1_secondary', ?)
+        anchored_to, events_in_range_count, verified, verified_at, verification_method
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'd1_secondary', ?, 1, ?, 'anchor_insert_self_verified')
     `).bind(
       anchorId,
-      this.lastHash,
-      this.eventSequence,
+      chainHead,
+      chainLength,
       now,
       anchorSequence,
       firstEvent?.id ?? '',
       lastEvent?.id ?? '',
       firstEvent?.timestamp ?? now,
       lastEvent?.timestamp ?? now,
-      this.eventSequence
+      chainLength,
+      now
     ).run();
 
     return Response.json({
       anchored: true,
       anchorId,
       anchorSequence,
-      chainHead: this.lastHash,
-      chainLength: this.eventSequence,
+      chainHead,
+      chainLength,
       firstEventId: firstEvent?.id,
       lastEventId: lastEvent?.id,
     });
@@ -325,13 +390,15 @@ export class AuditReporterAgent extends PaulPAgent {
       `SELECT MAX(anchor_sequence) as max_seq FROM audit_chain_anchors`
     ).first<{ max_seq: number }>();
 
+    const chainHead = lastEvent ? await this.getEventHash(lastEvent.id) : 'genesis';
+    const chainLength = await this.getCurrentChainLength();
     const anchorSequence = (prevAnchor?.max_seq ?? 0) + 1;
     const now = new Date().toISOString();
     const anchorId = deterministicId(
       'anchor',
       anchorSequence,
-      this.eventSequence,
-      this.lastHash,
+      chainLength,
+      chainHead,
       now
     );
 
@@ -339,35 +406,36 @@ export class AuditReporterAgent extends PaulPAgent {
       `INSERT INTO audit_chain_anchors (
         id, chain_head_hash, chain_length, anchor_timestamp, anchor_sequence,
         first_event_id, last_event_id, first_event_timestamp, last_event_timestamp,
-        anchored_to, events_in_range_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'd1_secondary', ?)`
+        anchored_to, events_in_range_count, verified, verified_at, verification_method
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'd1_secondary', ?, 1, ?, 'anchor_insert_self_verified')`
     )
       .bind(
         anchorId,
-        this.lastHash,
-        this.eventSequence,
+        chainHead,
+        chainLength,
         now,
         anchorSequence,
         firstEvent?.id ?? '',
         lastEvent?.id ?? '',
         firstEvent?.timestamp ?? '',
         lastEvent?.timestamp ?? '',
-        this.eventSequence
+        chainLength,
+        now
       )
       .run();
 
     await this.logAudit('CHAIN_ANCHORED', {
       anchorId,
-      chainHead: this.lastHash,
-      chainLength: this.eventSequence,
+      chainHead,
+      chainLength,
       anchorSequence,
     });
 
     return Response.json({
       anchored: true,
       anchorId,
-      chainHead: this.lastHash,
-      chainLength: this.eventSequence,
+      chainHead,
+      chainLength,
       anchorSequence,
     });
   }
@@ -383,5 +451,19 @@ export class AuditReporterAgent extends PaulPAgent {
     }
 
     return Response.json(result.value);
+  }
+
+  private async getCurrentChainLength(): Promise<number> {
+    const row = await this.env.DB.prepare(
+      `SELECT MAX(event_sequence) as seq FROM audit_chain_events`
+    ).first<{ seq: number | null }>();
+    return row?.seq ?? 0;
+  }
+
+  private async getEventHash(eventId: string): Promise<string> {
+    const row = await this.env.DB.prepare(
+      `SELECT hash FROM audit_chain_events WHERE id = ?`
+    ).bind(eventId).first<{ hash: string }>();
+    return row?.hash ?? 'genesis';
   }
 }

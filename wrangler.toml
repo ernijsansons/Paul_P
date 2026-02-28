@@ -29,11 +29,19 @@
 #    wrangler secret put KALSHI_API_KEY
 #    wrangler secret put KALSHI_PRIVATE_KEY
 #    wrangler secret put ANTHROPIC_API_KEY
+#    wrangler secret put MINIMAX_API_KEY
+#    wrangler secret put MOONSHOT_API_KEY
+#    wrangler secret put GOOGLE_AI_API_KEY
 #
 #    Optional:
 #    wrangler secret put IBKR_USERNAME
 #    wrangler secret put IBKR_PASSWORD
 #    wrangler secret put ADMIN_TOKEN  (for admin routes auth)
+#    wrangler secret put WEBHOOK_TRIGGER_TOKEN
+#    wrangler secret put KALSHI_WEBHOOK_SECRET
+#    wrangler secret put ADMIN_ALLOWED_EMAILS
+#    wrangler secret put ADMIN_ALLOWED_IPS
+#    wrangler secret put ADMIN_TURNSTILE_SECRET
 # ============================================================
 
 name = "paul-p"

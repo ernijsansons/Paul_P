@@ -33,6 +33,10 @@ Supported run types (closed set):
 
 Legacy run-type aliases are not accepted in routing/governance APIs.
 
+Storage compatibility note:
+- Runtime uses `invariant_explanation` in code and routing.
+- Legacy D1 schemas that still enforce `rule_interpretation` are written via compatibility alias at persistence time.
+
 ## Route Classes
 
 - `deterministic_hard_control` (no LLM allowed)

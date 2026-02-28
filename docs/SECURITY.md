@@ -60,6 +60,17 @@ Current topology is a single Worker script. Scoped env types are compile-time gu
 - Fields include run type, route class, resolved provider/model, override flags, and failure reason.
 - Budget enforcement and routing failures are persisted for post-incident reconstruction.
 
+## Admin and Webhook Auth
+
+- Admin API requires either:
+  - `Authorization: Bearer <ADMIN_TOKEN>`, or
+  - Cloudflare Access headers (`cf-access-authenticated-user-email` + `cf-access-jwt-assertion`)
+- Optional allowlist: `ADMIN_ALLOWED_EMAILS` (comma-separated).
+- Optional IP allowlist: `ADMIN_ALLOWED_IPS` (comma-separated).
+- Optional second factor on mutating admin routes: `ADMIN_TURNSTILE_SECRET`.
+- `/webhooks/trigger/*` requires bearer auth (`WEBHOOK_TRIGGER_TOKEN`, or `ADMIN_TOKEN` fallback).
+- `/webhooks/kalshi/events` requires shared secret header (`KALSHI_WEBHOOK_SECRET`, or `WEBHOOK_SHARED_SECRET` fallback).
+
 ## Operational Hardening Recommendations
 
 1. Split research and execution into separate Worker deployments with distinct secret sets.

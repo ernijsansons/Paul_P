@@ -1,7 +1,7 @@
 # Paul P Runbook
 
-**Version:** 1.1.0  
-**Last Updated:** 2026-02-27
+**Version:** 1.1.1  
+**Last Updated:** 2026-02-28
 
 ## Preconditions
 
@@ -36,6 +36,16 @@ wrangler secret put IBKR_USERNAME
 wrangler secret put IBKR_PASSWORD
 wrangler secret put NOAA_CDO_TOKEN
 wrangler secret put ADMIN_TOKEN
+wrangler secret put WEBHOOK_TRIGGER_TOKEN
+wrangler secret put KALSHI_WEBHOOK_SECRET
+```
+
+Optional admin hardening:
+
+```bash
+wrangler secret put ADMIN_ALLOWED_EMAILS
+wrangler secret put ADMIN_ALLOWED_IPS
+wrangler secret put ADMIN_TURNSTILE_SECRET
 ```
 
 ## Deploy Procedure
@@ -48,6 +58,7 @@ npm test
 2. Apply migrations:
 ```bash
 npm run db:migrate
+npm run db:migrate:anchor
 ```
 3. Deploy worker:
 ```bash
@@ -69,6 +80,28 @@ curl https://paul-p.ernijs-ansons.workers.dev/admin/routing/budget \
 2. Confirm route mix/call volume deltas.
 3. Wait for period reset (daily UTC midnight, monthly UTC day 1) or adjust assumptions.
 4. Recompute derived envelopes in `src/lib/llm/routing.budget.ts` and deploy.
+
+## Webhook Operations
+
+### Manual Trigger Authentication
+
+`/webhooks/trigger/*` requires bearer auth:
+
+```bash
+curl -X POST https://paul-p.ernijs-ansons.workers.dev/webhooks/trigger/ingest \
+  -H "Authorization: Bearer $WEBHOOK_TRIGGER_TOKEN"
+```
+
+### Kalshi Relay Authentication
+
+`/webhooks/kalshi/events` requires shared secret header:
+
+```bash
+curl -X POST https://paul-p.ernijs-ansons.workers.dev/webhooks/kalshi/events \
+  -H "X-Kalshi-Webhook-Secret: $KALSHI_WEBHOOK_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type":"order_update","payload":{}}'
+```
 
 ### Override Usage Policy
 

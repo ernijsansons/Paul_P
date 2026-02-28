@@ -19,6 +19,37 @@ interface ComplianceCheckResult {
   blockedEntities?: string[];
 }
 
+function getComplianceSourceIds(message: IngestionMessage): string[] {
+  if (message.venue === 'polymarket') {
+    switch (message.type) {
+      case 'fetch_markets':
+        return ['polymarket_gamma_api'];
+      case 'fetch_orderbook':
+        return ['polymarket_clob_api'];
+      case 'fetch_account':
+      case 'fetch_leaderboard':
+        return ['polymarket_data_api'];
+      default:
+        return [];
+    }
+  }
+
+  if (message.venue === 'kalshi') {
+    // Kalshi Trade API provides markets + orderbook in this ingestion flow.
+    switch (message.type) {
+      case 'fetch_markets':
+      case 'fetch_orderbook':
+      case 'fetch_account':
+      case 'fetch_leaderboard':
+        return ['kalshi_trade_api'];
+      default:
+        return [];
+    }
+  }
+
+  return [];
+}
+
 /**
  * Check compliance before processing ingestion request
  */
@@ -30,22 +61,12 @@ async function checkCompliance(
     const complianceId = env.COMPLIANCE.idFromName('singleton');
     const compliance = env.COMPLIANCE.get(complianceId);
 
-    // Extract entities to check from the message
-    const entities: string[] = [];
-
-    if (message.payload.marketId) {
-      entities.push(message.payload.marketId as string);
-    }
-    if (message.payload.accountId) {
-      entities.push(message.payload.accountId as string);
-    }
-    if (message.payload.marketIds && Array.isArray(message.payload.marketIds)) {
-      entities.push(...(message.payload.marketIds as string[]));
-    }
-
-    // If no specific entities, check venue-level compliance
+    const entities = getComplianceSourceIds(message);
     if (entities.length === 0) {
-      entities.push(`venue:${message.venue}`);
+      return {
+        allowed: false,
+        reason: `No compliance source mapping for ${message.venue}:${message.type}`,
+      };
     }
 
     const response = await compliance.fetch('http://internal/check-batch', {

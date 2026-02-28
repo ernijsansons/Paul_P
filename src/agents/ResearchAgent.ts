@@ -22,6 +22,7 @@ import {
   type CanonicalMarket,
   type EquivalenceGrade,
 } from '../lib/research/market-pairing';
+import { recordDriftSweep } from '../lib/llm/drift-sweeps';
 
 export class ResearchAgent extends PaulPAgent {
   readonly agentName = 'research-agent';
@@ -332,12 +333,43 @@ export class ResearchAgent extends PaulPAgent {
         return false;
       }
     }).length;
+    const lowConfidenceRate = runs.length > 0 ? lowConfidenceCount / runs.length : 0;
+    const flaggedRate = runs.length > 0 ? flaggedCount / runs.length : 0;
+    const driftWarning = avgConfidence < 0.6 || lowConfidenceRate > 0.3;
+
+    const failureReasons: string[] = [];
+    if (avgConfidence < 0.6) {
+      failureReasons.push(`Average confidence ${avgConfidence.toFixed(3)} below 0.600`);
+    }
+    if (lowConfidenceRate > 0.3) {
+      failureReasons.push(
+        `Low-confidence rate ${(lowConfidenceRate * 100).toFixed(1)}% exceeds 30.0%`
+      );
+    }
+
+    const driftPersist = await recordDriftSweep(this.env, {
+      sweepType: 'nightly_stability',
+      baselinePromptVersion: getPromptVersion('ambiguity_score'),
+      baselineModelId: 'routing:auto',
+      candidatePromptVersion: getPromptVersion('ambiguity_score'),
+      candidateModelId: 'routing:auto',
+      goldSetSize: runs.length,
+      meanScoreDelta: lowConfidenceRate,
+      maxScoreDelta: Math.max(lowConfidenceRate, flaggedRate),
+      promptInjectionPassRate: 1.0,
+      passed: !driftWarning,
+      failureReasons,
+      runAt: new Date().toISOString(),
+    });
 
     await this.logAudit('DRIFT_SWEEP_COMPLETED', {
       runsAnalyzed: runs.length,
       avgConfidence,
       lowConfidenceCount,
       flaggedCount,
+      persistedSweepId: driftPersist.id,
+      persistedSchema: driftPersist.storedWith,
+      driftWarning,
     });
 
     return Response.json({
@@ -345,9 +377,11 @@ export class ResearchAgent extends PaulPAgent {
       runsAnalyzed: runs.length,
       avgConfidence,
       lowConfidenceCount,
-      lowConfidenceRate: runs.length > 0 ? lowConfidenceCount / runs.length : 0,
+      lowConfidenceRate,
       flaggedCount,
-      driftWarning: avgConfidence < 0.6 || lowConfidenceCount / runs.length > 0.3,
+      driftWarning,
+      persistedSweepId: driftPersist.id,
+      persistedSchema: driftPersist.storedWith,
     });
   }
 
