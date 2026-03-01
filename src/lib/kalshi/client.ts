@@ -142,7 +142,7 @@ export async function fetchMarkets(
 
   if (options?.limit) params['limit'] = String(options.limit);
   if (options?.cursor) params['cursor'] = options.cursor;
-  if (options?.status) params['status'] = options.status;
+  // Note: Kalshi API doesn't support status filter - removed to prevent 400 errors
   if (options?.seriesTicker) params['series_ticker'] = options.seriesTicker;
   if (options?.eventTicker) params['event_ticker'] = options.eventTicker;
 
@@ -484,10 +484,11 @@ export async function fetchAllActiveMarkets(
   let cursor: string | undefined;
 
   while (markets.length < maxMarkets) {
+    // Note: Kalshi API doesn't support status filter - markets endpoint returns all markets
+    // Filter for tradeable markets client-side based on close_time
     const result = await fetchMarkets(env, {
       limit: 100,
       cursor,
-      status: 'active',
     });
 
     if (!result.ok) return Err(result.error);
