@@ -103,3 +103,63 @@ healthRoutes.get('/ready', async (c) => {
 healthRoutes.get('/live', (c) => {
   return c.json({ alive: true });
 });
+
+/**
+ * Constant-time string comparison to prevent timing attacks
+ */
+function secureCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+/**
+ * Debug: Trigger market data ingestion
+ * Protected by admin authorization in production
+ */
+healthRoutes.post('/debug/ingest', async (c) => {
+  // Production protection: require admin authorization
+  if (c.env.ENVIRONMENT === 'production') {
+    const adminToken = c.env.ADMIN_TOKEN;
+    // Fail closed: if ADMIN_TOKEN is not configured, deny access
+    if (!adminToken) {
+      return c.json({ error: 'Admin token not configured' }, 500);
+    }
+
+    const authHeader = c.req.header('Authorization');
+    const expectedHeader = `Bearer ${adminToken}`;
+
+    // Use constant-time comparison to prevent timing attacks
+    if (!authHeader || !secureCompare(authHeader, expectedHeader)) {
+      return c.json({ error: 'Debug endpoint requires admin authorization in production' }, 403);
+    }
+  }
+
+  const orchestratorId = c.env.PAUL_P_ORCHESTRATOR.idFromName('singleton');
+  const orchestrator = c.env.PAUL_P_ORCHESTRATOR.get(orchestratorId);
+
+  try {
+    const response = await orchestrator.fetch('http://internal/trigger/ingest', {
+      method: 'POST',
+    });
+
+    const result = await response.json();
+    return c.json({
+      success: true,
+      message: 'Ingestion triggered',
+      result,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return c.json({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      timestamp: new Date().toISOString(),
+    }, 500);
+  }
+});

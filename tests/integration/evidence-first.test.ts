@@ -507,12 +507,17 @@ describe('Evidence-First Pattern Integration', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 
-      const r2Object = await env.R2_EVIDENCE.get(result.value.r2Key);
-      expect(r2Object).toBeDefined();
-      expect(r2Object?.customMetadata?.source).toBe('test-metadata');
-      expect(r2Object?.customMetadata?.endpoint).toBe('/api/v2/data');
-      expect(r2Object?.customMetadata?.fetchedAt).toBe(fetchedAt);
-      expect(r2Object?.customMetadata?.requestMethod).toBe('GET');
+      // Verify metadata through retrieval function (more robust than raw R2 access)
+      // This approach works reliably across all Miniflare versions
+      const retrieveResult = await retrieveEvidence(env, result.value.evidenceHash);
+      expect(retrieveResult.ok).toBe(true);
+      if (!retrieveResult.ok) return;
+
+      // Check metadata is preserved through store/retrieve cycle
+      expect(retrieveResult.value.metadata?.source).toBe('test-metadata');
+      expect(retrieveResult.value.metadata?.endpoint).toBe('/api/v2/data');
+      expect(retrieveResult.value.metadata?.fetchedAt).toBe(fetchedAt);
+      expect(retrieveResult.value.metadata?.requestMethod).toBe('GET');
     });
   });
 });
