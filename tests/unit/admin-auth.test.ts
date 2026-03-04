@@ -28,22 +28,25 @@ describe('admin route auth middleware', () => {
     expect(body.message).toContain('JWT assertion');
   });
 
-  it('enforces Access email allowlist when configured', async () => {
+  it('returns 500 when CF Access headers present but env vars missing (fail-closed)', async () => {
     const env = createEnv({
-      ADMIN_ALLOWED_EMAILS: 'approved@example.com',
+      // CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUDIENCE not set
     });
 
     const response = await adminRoutes.fetch(
       new Request('http://localhost/unknown', {
         headers: {
-          'cf-access-authenticated-user-email': 'blocked@example.com',
+          'cf-access-authenticated-user-email': 'user@example.com',
           'cf-access-jwt-assertion': 'jwt-token',
         },
       }),
       env
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(500);
+    const body = await response.json<{ error: string; message: string }>();
+    expect(body.error).toBe('Server Configuration Error');
+    expect(body.message).toContain('CF Access JWT validation not configured');
   });
 
   it('allows bearer token auth and continues routing', async () => {

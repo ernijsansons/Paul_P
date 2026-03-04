@@ -20,6 +20,7 @@
 import { Hono, type Context } from 'hono';
 import type { Env } from '../types/env';
 import { hasRecentDriftBlock } from '../lib/llm/drift-sweeps';
+import { validateCFAccessJWT } from '../lib/security';
 
 type Variables = {
   adminUser: string;
@@ -81,7 +82,9 @@ function checkAdminIpAllowlist(c: AdminContext): { ok: boolean; reason?: string 
     return { ok: false, reason: 'Client IP unavailable for allowlist check' };
   }
 
-  if (!allowedIps.has(clientIp)) {
+  // SECURITY FIX: Normalize IP to lowercase for case-insensitive comparison
+  // (IPv6 addresses may arrive in mixed case, e.g., "2001:DB8::1" vs "2001:db8::1")
+  if (!allowedIps.has(clientIp.toLowerCase())) {
     return { ok: false, reason: 'Client IP is not in admin allowlist' };
   }
 
@@ -176,6 +179,36 @@ adminRoutes.use('*', async (c, next) => {
       return c.json({
         error: 'Unauthorized',
         message: 'Cloudflare Access JWT assertion is required',
+      }, 401);
+    }
+
+    // SECURITY FIX: Validate JWT signature, not just presence
+    const teamDomain = c.env.CF_ACCESS_TEAM_DOMAIN;
+    const audience = c.env.CF_ACCESS_AUDIENCE;
+
+    // SECURITY FIX: Fail-closed when CF Access headers present but env vars missing
+    if (!teamDomain || !audience) {
+      console.error('CF Access headers present but CF_ACCESS_TEAM_DOMAIN or CF_ACCESS_AUDIENCE not configured');
+      return c.json({
+        error: 'Server Configuration Error',
+        message: 'CF Access JWT validation not configured. Contact administrator.',
+      }, 500);
+    }
+
+    // Validate the JWT cryptographically
+    const validation = await validateCFAccessJWT(cfAccessJwt, teamDomain, audience);
+    if (!validation.valid) {
+      return c.json({
+        error: 'Unauthorized',
+        message: `JWT validation failed: ${validation.error}`,
+      }, 401);
+    }
+
+    // Verify email matches JWT claims
+    if (validation.claims.email.toLowerCase() !== cfAccessUser.toLowerCase()) {
+      return c.json({
+        error: 'Unauthorized',
+        message: 'Email header does not match JWT claims',
       }, 401);
     }
 
@@ -607,6 +640,17 @@ adminRoutes.post('/strategies/:id/go-live', async (c) => {
     approvedBy,
     strategyType
   ).run();
+
+  // Notify Kalshi execution agent to reload mode from D1
+  // This ensures the DO picks up the LIVE mode immediately
+  try {
+    const kalshiExecId = c.env.KALSHI_EXEC.idFromName('singleton');
+    const kalshiExec = c.env.KALSHI_EXEC.get(kalshiExecId);
+    await kalshiExec.fetch('http://internal/mode/reload', { method: 'POST' });
+  } catch (error) {
+    // Non-fatal - agent will load mode on next request anyway
+    console.error('Failed to notify Kalshi execution agent:', error);
+  }
 
   return c.json({
     success: true,

@@ -396,12 +396,14 @@ describe('Admin Endpoints - Authentication Layers', () => {
     expect(response.status).toBe(401);
   });
 
-  it('enforces email allowlist when ADMIN_ALLOWED_EMAILS configured', async () => {
+  it('returns 500 (fail-closed) when CF Access headers present but JWT validation not configured', async () => {
+    // SECURITY FIX: CF Access now fails closed when CF_ACCESS_TEAM_DOMAIN/AUDIENCE not configured
     const env = createEnv({
       ADMIN_ALLOWED_EMAILS: 'admin@example.com,ops@example.com',
+      // Note: CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUDIENCE not set
     });
 
-    const notInAllowlist = await adminRoutes.fetch(
+    const response = await adminRoutes.fetch(
       new Request('http://localhost/status', {
         headers: {
           'cf-access-authenticated-user-email': 'unauthorized@example.com',
@@ -411,14 +413,18 @@ describe('Admin Endpoints - Authentication Layers', () => {
       env
     );
 
-    expect(notInAllowlist.status).toBe(403);
-    const body = await notInAllowlist.json<{ error: string; message: string }>();
-    expect(body.message).toContain('not allowed');
+    // Fail-closed: returns 500 when JWT validation cannot be performed
+    expect(response.status).toBe(500);
+    const body = await response.json<{ error: string; message: string }>();
+    expect(body.error).toBe('Server Configuration Error');
+    expect(body.message).toContain('CF Access JWT validation not configured');
   });
 
-  it('allows Cloudflare Access user in allowlist', async () => {
+  it('CF Access requires JWT validation configuration to proceed (fail-closed)', async () => {
+    // SECURITY FIX: Even if user is in allowlist, JWT must be validated
     const env = createEnv({
       ADMIN_ALLOWED_EMAILS: 'admin@example.com,ops@example.com',
+      // Note: CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUDIENCE not set
     });
 
     const response = await adminRoutes.fetch(
@@ -431,7 +437,10 @@ describe('Admin Endpoints - Authentication Layers', () => {
       env
     );
 
-    expect(response.status).toBe(200);
+    // Fail-closed: returns 500 when JWT validation cannot be performed
+    expect(response.status).toBe(500);
+    const body = await response.json<{ error: string; message: string }>();
+    expect(body.error).toBe('Server Configuration Error');
   });
 
   it('requires JWT assertion when using CF Access email header', async () => {
