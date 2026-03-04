@@ -9,37 +9,44 @@
 
 export interface GammaMarket {
   id: string;
-  condition_id: string;
+  conditionId: string; // API uses camelCase
   question: string;
   description: string;
-  end_date_iso: string;
-  resolution_source: string;
+  endDate: string; // API uses camelCase (ISO date string)
+  endDateIso?: string; // Also available
+  resolutionSource?: string;
+  resolution_source?: string; // Some endpoints use snake_case
   resolution_criteria?: string;
 
   // Token data
-  tokens: GammaToken[];
+  tokens?: GammaToken[];
+  clobTokenIds?: string; // JSON stringified array of token IDs
 
   // Status
   active: boolean;
   closed: boolean;
-  resolved: boolean;
+  archived?: boolean;
 
-  // Pricing
-  outcome_prices: string; // JSON stringified array
+  // Pricing - API uses camelCase
+  outcomePrices: string; // JSON stringified array e.g. '["0.5", "0.5"]'
+  outcomes?: string; // JSON stringified array e.g. '["Yes", "No"]'
 
-  // Volume
+  // Volume - API returns strings
   volume: string;
-  volume_24h: string;
+  volume24hr?: number;
   liquidity: string;
+  volumeNum?: number;
+  liquidityNum?: number;
 
   // Classification
   tags?: string[];
-  series?: string;
+  slug?: string;
   category?: string;
 
   // Timestamps
-  created_at: string;
-  updated_at: string;
+  createdAt?: string;
+  updatedAt?: string;
+  closedTime?: string;
 }
 
 export interface GammaToken {

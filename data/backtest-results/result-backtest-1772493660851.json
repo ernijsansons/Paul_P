@@ -1,0 +1,85 @@
+{
+  "config": {
+    "dataPath": "./data/kalshi-historical",
+    "startDate": "2025-02-27",
+    "endDate": "2025-03-02",
+    "strategyConfig": {
+      "strategyId": "bonding-v1",
+      "version": "1.0.0",
+      "name": "Bonding Strategy",
+      "minProbability": 0.8,
+      "maxProbability": 0.99,
+      "minEdge": 0.01,
+      "maxSpread": 0.15,
+      "minLiquidity": 50,
+      "kellyFraction": 0.25,
+      "maxPositionPct": 0.05,
+      "maxDailyLossPct": 0.03,
+      "maxDrawdownPct": 0.15
+    },
+    "fillModel": {
+      "name": "conservative",
+      "baseSlippageBps": 100,
+      "sizeImpactFactor": 0.5,
+      "spreadImpactFactor": 0.3,
+      "vpinImpactFactor": 0.2,
+      "limitFillProbability": 0.5,
+      "marketFillProbability": 0.95,
+      "allowPartialFills": false,
+      "partialFillDistribution": "uniform"
+    },
+    "initialCapital": 800,
+    "walkForward": {
+      "enabled": false,
+      "trainPct": 0.6,
+      "valPct": 0.2,
+      "oosPct": 0.2,
+      "rollingWindows": 5
+    },
+    "feePerContract": 0.0107
+  },
+  "runId": "backtest-1772493660851",
+  "startedAt": "2026-03-02T23:21:00.851Z",
+  "completedAt": "2026-03-02T23:21:01.234Z",
+  "marketsAnalyzed": 82,
+  "signalsGenerated": 0,
+  "ordersExecuted": 0,
+  "positionsClosed": 0,
+  "trainMetrics": null,
+  "valMetrics": null,
+  "oosMetrics": {
+    "totalReturn": 0,
+    "annualizedReturn": 0,
+    "sharpeRatio": 0,
+    "sortinoRatio": 0,
+    "maxDrawdown": 0,
+    "maxDrawdownDuration": 0,
+    "volatility": 0,
+    "totalTrades": 0,
+    "winningTrades": 0,
+    "losingTrades": 0,
+    "winRate": 0,
+    "avgWin": 0,
+    "avgLoss": 0,
+    "profitFactor": 0,
+    "avgClv": 0,
+    "clvPositiveRate": 0,
+    "avgSlippage": 0,
+    "totalFees": 0,
+    "fillRate": 0,
+    "winRateCI": {
+      "lower": 0,
+      "upper": 1,
+      "confidence": 0.95
+    },
+    "sharpeCI": {
+      "lower": -0.5,
+      "upper": 0.5,
+      "confidence": 0.95
+    }
+  },
+  "walkForwardResults": [],
+  "positions": [],
+  "orders": [],
+  "equityCurve": []
+}

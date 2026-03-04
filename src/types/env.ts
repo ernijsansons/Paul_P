@@ -66,6 +66,8 @@ export interface Env {
   ADMIN_ALLOWED_EMAILS?: string; // Comma-separated Cloudflare Access allowlist
   ADMIN_ALLOWED_IPS?: string; // Comma-separated IP allowlist for admin routes
   ADMIN_TURNSTILE_SECRET?: string; // Optional second-factor verification for mutating admin routes
+  CF_ACCESS_TEAM_DOMAIN?: string; // CF Access team domain for JWT validation (e.g., yourteam.cloudflareaccess.com)
+  CF_ACCESS_AUDIENCE?: string; // CF Access Application Audience (AUD) for JWT validation
   WEBHOOK_TRIGGER_TOKEN?: string; // Auth token for /webhooks/trigger/*
   KALSHI_WEBHOOK_SECRET?: string; // Shared secret for /webhooks/kalshi/events
   WEBHOOK_SHARED_SECRET?: string; // Fallback shared secret for webhook ingress

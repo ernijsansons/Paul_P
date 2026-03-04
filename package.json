@@ -10,15 +10,17 @@
     "test:watch": "node ./scripts/run-vitest.cjs",
     "test:coverage": "node ./scripts/run-vitest.cjs run --coverage",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "wrangler d1 migrations apply paul-p-primary",
-    "db:migrate:anchor": "wrangler d1 migrations apply paul-p-anchor",
+    "db:migrate": "wrangler d1 migrations apply paul-p-primary --remote",
+    "db:migrate:anchor": "wrangler d1 migrations apply paul-p-anchor --remote",
+    "db:migrate:local": "wrangler d1 migrations apply paul-p-primary --local",
     "lint": "tsc --noEmit",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
     "agents": "^0.6.0",
     "drizzle-orm": "^0.38.0",
-    "hono": "^4.7.0"
+    "hono": "^4.7.0",
+    "jose": "^6.1.3"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.8.0",

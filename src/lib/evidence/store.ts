@@ -73,6 +73,8 @@ export async function storeEvidence(
   input: StoreEvidenceInput
 ): Promise<Result<StoreEvidenceResult, Error>> {
   try {
+    console.log(`[EvidenceStore] Storing evidence from ${input.source}: ${input.endpoint}, size=${input.rawBytes.byteLength}`);
+
     // Compute hash of raw bytes
     const evidenceHash = await sha256(input.rawBytes);
 

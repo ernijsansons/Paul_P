@@ -303,7 +303,8 @@ describe('Execution Policy Engine', () => {
         signal: { ...createRequest().signal, side: 'YES' },
         maxPrice: 55,
       });
-      const order = transformToKalshiOrder(request, PAPER_TRADING_POLICY);
+      const market = createMarket({ yes_ask: 52 });
+      const order = transformToKalshiOrder(request, market, PAPER_TRADING_POLICY);
 
       expect(order.ticker).toBe('TEST-MARKET-123');
       expect(order.client_order_id).toBe('test-order-1');
@@ -318,7 +319,8 @@ describe('Execution Policy Engine', () => {
         signal: { ...createRequest().signal, side: 'NO' },
         maxPrice: 45,
       });
-      const order = transformToKalshiOrder(request, PAPER_TRADING_POLICY);
+      const market = createMarket({ no_ask: 48 });
+      const order = transformToKalshiOrder(request, market, PAPER_TRADING_POLICY);
 
       expect(order.side).toBe('no');
       expect(order.no_price).toBe(45);
@@ -327,7 +329,8 @@ describe('Execution Policy Engine', () => {
 
     it('caps order size at policy max', () => {
       const request = createRequest({ requestedSize: 200 });
-      const order = transformToKalshiOrder(request, PAPER_TRADING_POLICY);
+      const market = createMarket();
+      const order = transformToKalshiOrder(request, market, PAPER_TRADING_POLICY);
 
       expect(order.count).toBe(100); // Policy max
     });

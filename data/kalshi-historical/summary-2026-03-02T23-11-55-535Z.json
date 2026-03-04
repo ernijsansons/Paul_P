@@ -1,0 +1,17 @@
+{
+  "downloadedAt": "2026-03-02T23:11:55.793Z",
+  "totalMarkets": 10000,
+  "marketsWithCandlesticks": 82,
+  "dateRange": {
+    "earliest": "2025-02-27T22:27:15.278596Z",
+    "latest": "2025-03-01T23:04:55.278221Z"
+  },
+  "byResult": {
+    "yes": 2663,
+    "no": 7337,
+    "other": 0
+  },
+  "byCategory": {
+    "unknown": 10000
+  }
+}

@@ -65,53 +65,107 @@ export class MarketDataAgent extends PaulPAgent {
 
   private async ingestMarkets(request: Request): Promise<Response> {
     const body = await request.json<{ venue: string; limit?: number }>();
+    console.log(`[MarketDataAgent] Ingesting markets for venue: ${body.venue}, limit: ${body.limit ?? 500}`);
 
     if (body.venue === 'polymarket') {
+      console.log('[MarketDataAgent] Fetching Polymarket markets...');
       const result = await polymarketGamma.fetchAllActiveMarkets(this.env, body.limit ?? 500);
+      console.log(`[MarketDataAgent] Polymarket fetch result: ok=${result.ok}, markets=${result.ok ? result.value.markets.length : 'N/A'}`);
 
       if (!result.ok) {
+        await this.logAudit('MARKETS_INGESTION_FAILED', {
+          venue: 'polymarket',
+          error: result.error.message,
+        });
         return Response.json({ error: result.error.message }, { status: 500 });
       }
 
-      // Store markets in D1
-      for (const market of result.value.markets) {
-        await this.upsertPolymarketMarket(market);
-      }
+      // Store markets in D1 with error tracking
+      let successCount = 0;
+      const errors: string[] = [];
+      console.log(`[MarketDataAgent] Starting to upsert ${result.value.markets.length} Polymarket markets...`);
 
+      for (const market of result.value.markets) {
+        try {
+          await this.upsertPolymarketMarket(market);
+          successCount++;
+          if (successCount <= 3 || successCount % 25 === 0) {
+            console.log(`[MarketDataAgent] Upserted market ${successCount}/${result.value.markets.length}: ${market.conditionId}`);
+          }
+        } catch (error) {
+          const errorMsg = `Failed to upsert market ${market.conditionId}: ${error instanceof Error ? error.message : String(error)}`;
+          errors.push(errorMsg);
+          console.error(`[MarketDataAgent] ${errorMsg}`);
+        }
+      }
+      console.log(`[MarketDataAgent] Finished upserting Polymarket markets. Success: ${successCount}, Errors: ${errors.length}`);
+
+      // Log audit even if some markets failed
       await this.logAudit('MARKETS_INGESTED', {
         venue: 'polymarket',
-        count: result.value.markets.length,
+        count: successCount,
+        totalFetched: result.value.markets.length,
+        errors: errors.length > 0 ? errors.slice(0, 5) : undefined, // Log first 5 errors
         evidenceHashes: result.value.evidenceHashes,
       });
 
       return Response.json({
-        success: true,
-        count: result.value.markets.length,
+        success: successCount > 0,
+        count: successCount,
+        totalFetched: result.value.markets.length,
+        errorCount: errors.length,
+        errors: errors.slice(0, 5),
         evidenceHashes: result.value.evidenceHashes,
       });
     }
 
     if (body.venue === 'kalshi') {
+      console.log('[MarketDataAgent] Fetching Kalshi markets...');
       const result = await kalshiClient.fetchAllActiveMarkets(this.env, body.limit ?? 500);
+      console.log(`[MarketDataAgent] Kalshi fetch result: ok=${result.ok}, markets=${result.ok ? result.value.markets.length : 'N/A'}`);
 
       if (!result.ok) {
+        await this.logAudit('MARKETS_INGESTION_FAILED', {
+          venue: 'kalshi',
+          error: result.error.message,
+        });
         return Response.json({ error: result.error.message }, { status: 500 });
       }
 
-      // Store markets in D1
+      // Store markets in D1 with error tracking
+      let successCount = 0;
+      const errors: string[] = [];
+      console.log(`[MarketDataAgent] Starting to upsert ${result.value.markets.length} Kalshi markets...`);
+
       for (const market of result.value.markets) {
-        await this.upsertKalshiMarket(market);
+        try {
+          await this.upsertKalshiMarket(market);
+          successCount++;
+          if (successCount <= 3 || successCount % 25 === 0) {
+            console.log(`[MarketDataAgent] Upserted market ${successCount}/${result.value.markets.length}: ${market.ticker}`);
+          }
+        } catch (error) {
+          const errorMsg = `Failed to upsert market ${market.ticker}: ${error instanceof Error ? error.message : String(error)}`;
+          errors.push(errorMsg);
+          console.error(`[MarketDataAgent] ${errorMsg}`);
+        }
       }
+      console.log(`[MarketDataAgent] Finished upserting Kalshi markets. Success: ${successCount}, Errors: ${errors.length}`);
 
       await this.logAudit('MARKETS_INGESTED', {
         venue: 'kalshi',
-        count: result.value.markets.length,
+        count: successCount,
+        totalFetched: result.value.markets.length,
+        errors: errors.length > 0 ? errors.slice(0, 5) : undefined,
         evidenceHashes: result.value.evidenceHashes,
       });
 
       return Response.json({
-        success: true,
-        count: result.value.markets.length,
+        success: successCount > 0,
+        count: successCount,
+        totalFetched: result.value.markets.length,
+        errorCount: errors.length,
+        errors: errors.slice(0, 5),
         evidenceHashes: result.value.evidenceHashes,
       });
     }

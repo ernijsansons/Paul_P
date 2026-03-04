@@ -404,7 +404,7 @@ describe('Risk Governor Integration', () => {
   // ----------------------------------------------------------
   // TEST 7: All 17 invariants evaluated for every order
   // ----------------------------------------------------------
-  it('evaluates all 17 invariants for each order', () => {
+  it('evaluates all 18 invariants for each order', () => {
     const riskRequest = createRiskRequest({
       size: 400,
       portfolioValue: 10000,
@@ -421,8 +421,8 @@ describe('Risk Governor Integration', () => {
 
     const results = runAllInvariantChecks(riskRequest, DEFAULT_LIMITS);
 
-    // Should have exactly 17 results
-    expect(results).toHaveLength(17);
+    // Should have exactly 18 results (17 + I18 slippage kill switch)
+    expect(results).toHaveLength(18);
 
     // Verify all invariant IDs are present (matching exact IDs from implementation)
     const invariantIds = [
@@ -443,6 +443,7 @@ describe('Risk Governor Integration', () => {
       'I15_ORDER_SIZE_LIMITS',
       'I16_CIRCUIT_BREAKER_STATE',
       'I17_SYSTEM_HEALTH',
+      'I18_MAX_SLIPPAGE_VS_EDGE',
     ];
 
     for (const id of invariantIds) {
@@ -510,8 +511,8 @@ describe('Risk Governor Integration', () => {
     // The function should run and fail most checks due to extreme values
     const results = runAllInvariantChecks(invalidRequest, DEFAULT_LIMITS);
 
-    // Should still return 17 results
-    expect(results).toHaveLength(17);
+    // Should still return 18 results (17 + I18 slippage kill switch)
+    expect(results).toHaveLength(18);
 
     // Most should fail due to invalid/extreme values
     const failures = getCriticalFailures(results);

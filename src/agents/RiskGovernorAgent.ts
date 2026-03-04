@@ -20,10 +20,14 @@ import {
   shouldBlockOrder,
   type RiskCheckRequest,
   type RiskLimits,
-  type CorrelatedMarketInfo,
   DEFAULT_LIMITS,
 } from '../lib/risk/invariants';
-import { getCorrelatedMarkets } from '../lib/risk/event-graph';
+import { getCorrelatedMarketsWithStatus } from '../lib/risk/event-graph';
+import {
+  checkTailConcentration as calculateTailConcentration,
+  createSnapshotParams,
+  type TailPosition,
+} from '../lib/risk/tail-concentration';
 
 type CircuitBreakerState = 'NORMAL' | 'CAUTION' | 'HALT' | 'RECOVERY';
 
@@ -74,6 +78,9 @@ export class RiskGovernorAgent extends PaulPAgent {
   private alertConfig: AlertConfig = { ...DEFAULT_ALERT_CONFIG };
   private consecutiveFailures = 0;
   private lastStateChange: string = new Date().toISOString();
+  private haltStartTime: number | null = null;  // Track when HALT started (Phase A)
+  private HALT_TIMEOUT_MS = 60 * 60 * 1000;  // 60 minutes (Phase A)
+  private currentPortfolioState: PortfolioState | null = null;  // Phase A: Cached for tail concentration checks
 
   protected async initLocalTables(): Promise<void> {
     this.sql.exec(`
@@ -82,7 +89,9 @@ export class RiskGovernorAgent extends PaulPAgent {
         from_state TEXT NOT NULL,
         to_state TEXT NOT NULL,
         reason TEXT NOT NULL,
-        timestamp TEXT NOT NULL
+        timestamp TEXT NOT NULL,
+        halt_duration_minutes INTEGER,
+        auto_recovery_at TEXT
       )
     `);
 
@@ -123,10 +132,37 @@ export class RiskGovernorAgent extends PaulPAgent {
         timestamp TEXT NOT NULL
       )
     `);
+
+    // Tail concentration tracking for barbell strategy (Herfindahl < 0.3)
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS tail_concentration_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_at TEXT NOT NULL,
+        tail_portfolio_size REAL NOT NULL,
+        tail_position_count INTEGER NOT NULL,
+        tail_market_ids TEXT,
+        tail_herfindahl REAL NOT NULL,
+        tail_max_position_pct REAL NOT NULL,
+        is_compliant INTEGER NOT NULL,
+        violations TEXT,
+        rebalance_recommended INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_tail_snapshots_compliant ON tail_concentration_snapshots(is_compliant)`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_tail_snapshots_at ON tail_concentration_snapshots(snapshot_at)`);
   }
 
   protected async handleRequest(request: Request, path: string): Promise<Response> {
     await this.initLocalTables();
+
+    // Phase A: Check for HALT timeout recovery (auto-exit HALT after 60 min)
+    await this.checkHaltTimeout();
+
+    // Phase A: Check tail concentration using cached portfolio state (if available)
+    if (this.currentPortfolioState && this.currentPortfolioState.positions.length > 0) {
+      await this.checkTailConcentration(this.currentPortfolioState.positions);
+    }
 
     switch (path) {
       case '/check-signal':
@@ -199,14 +235,30 @@ export class RiskGovernorAgent extends PaulPAgent {
     }
 
     // Fetch correlated markets from Event Graph for I3 check (P-06)
-    let correlatedMarkets: CorrelatedMarketInfo[] = [];
-    try {
-      correlatedMarkets = await getCorrelatedMarkets(this.env, body.marketId ?? 'unknown');
-    } catch (error) {
-      // Event Graph query failed - continue without correlation data (fail-open for this check)
-      console.warn('Event Graph correlation lookup failed:', error);
+    // FAIL-CLOSED: If Event Graph lookup fails, block execution
+    const correlationResult = await getCorrelatedMarketsWithStatus(
+      this.env,
+      body.marketId ?? 'unknown'
+    );
+
+    if (!correlationResult.success) {
+      // FAIL-CLOSED: Block execution when correlation data unavailable
+      console.error('Event Graph correlation lookup failed (FAIL-CLOSED):', correlationResult.error);
+      return Response.json({
+        approved: false,
+        blocked: true,
+        reason: `Event Graph correlation lookup failed: ${correlationResult.error}. Blocking execution to prevent undetected correlation risk.`,
+        invariantResults: [],
+        criticalFailures: [{
+          id: 'I3_CORRELATION_LOOKUP',
+          message: 'Correlation data unavailable - cannot assess market exposure correlation',
+        }],
+        warnings: [],
+        checkRequest: this.buildRiskCheckRequest(body),
+      });
     }
-    body.correlatedMarkets = correlatedMarkets;
+
+    body.correlatedMarkets = correlationResult.correlatedMarkets;
 
     const checkRequest = this.buildRiskCheckRequest(body);
     const adjustedLimits = this.getAdjustedLimits();
@@ -220,15 +272,17 @@ export class RiskGovernorAgent extends PaulPAgent {
       `INSERT INTO risk_check_history
        (market_id, strategy, size, approved, invariants_passed, invariants_failed, critical_failures, warnings, timestamp)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      checkRequest.marketId,
-      checkRequest.strategy,
-      checkRequest.size,
-      blocked ? 0 : 1,
-      results.filter(r => r.passed).length,
-      results.filter(r => !r.passed).length,
-      JSON.stringify(criticalFailures.map(f => f.id)),
-      JSON.stringify(warnings.map(w => w.id)),
-      new Date().toISOString()
+      [
+        checkRequest.marketId,
+        checkRequest.strategy,
+        checkRequest.size,
+        blocked ? 0 : 1,
+        results.filter(r => r.passed).length,
+        results.filter(r => !r.passed).length,
+        JSON.stringify(criticalFailures.map(f => f.id)),
+        JSON.stringify(warnings.map(w => w.id)),
+        new Date().toISOString()
+      ]
     );
 
     if (blocked) {
@@ -349,7 +403,7 @@ export class RiskGovernorAgent extends PaulPAgent {
 
     this.sql.exec(
       `INSERT INTO alert_history (alert_type, severity, message, timestamp) VALUES (?, ?, ?, ?)`,
-      alert.type, alert.severity, alert.message, new Date().toISOString()
+      [alert.type, alert.severity, alert.message, new Date().toISOString()]
     );
 
     if (alert.severity === 'critical') {
@@ -366,17 +420,20 @@ export class RiskGovernorAgent extends PaulPAgent {
 
   private async acknowledgeAlert(request: Request): Promise<Response> {
     const body = await request.json() as { alertId: number };
-    this.sql.exec(`UPDATE alert_history SET acknowledged = 1 WHERE id = ?`, body.alertId);
+    this.sql.exec(`UPDATE alert_history SET acknowledged = 1 WHERE id = ?`, [body.alertId]);
     return Response.json({ success: true, alertId: body.alertId });
   }
 
   private async updatePortfolioState(request: Request): Promise<Response> {
     const state = await request.json() as PortfolioState;
 
+    // Phase A: Cache portfolio state for tail concentration checks
+    this.currentPortfolioState = state;
+
     this.sql.exec(
       `INSERT INTO portfolio_snapshots (total_value, daily_pnl, weekly_pnl, max_drawdown, position_count, timestamp)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      state.totalValue, state.dailyPnL, state.weeklyPnL, state.maxDrawdown, state.positions.length, new Date().toISOString()
+      [state.totalValue, state.dailyPnL, state.weeklyPnL, state.maxDrawdown, state.positions.length, new Date().toISOString()]
     );
 
     const dailyLossPct = Math.abs(Math.min(0, state.dailyPnL)) / state.totalValue * 100;
@@ -394,13 +451,18 @@ export class RiskGovernorAgent extends PaulPAgent {
         `Drawdown ${drawdownPct.toFixed(2)}% approaching/exceeding limit`);
     }
 
+    // Phase A: Check tail concentration when portfolio is updated
+    if (state.positions.length > 0) {
+      await this.checkTailConcentration(state.positions);
+    }
+
     return Response.json({ updated: true });
   }
 
   private async recordAlert(type: string, severity: 'warning' | 'critical', message: string): Promise<void> {
     this.sql.exec(
       `INSERT INTO alert_history (alert_type, severity, message, timestamp) VALUES (?, ?, ?, ?)`,
-      type, severity, message, new Date().toISOString()
+      [type, severity, message, new Date().toISOString()]
     );
 
     if (severity === 'critical') {
@@ -823,10 +885,68 @@ export class RiskGovernorAgent extends PaulPAgent {
     const from = this.circuitBreakerState;
     this.sql.exec(
       `INSERT INTO circuit_breaker_history (from_state, to_state, reason, timestamp) VALUES (?, ?, ?, ?)`,
-      from, to, reason, new Date().toISOString()
+      [from, to, reason, new Date().toISOString()]
     );
     this.circuitBreakerState = to;
     this.lastStateChange = new Date().toISOString();
+
+    // Phase A: Track HALT timeout for auto-recovery
+    if (to === 'HALT') {
+      this.haltStartTime = Date.now();
+    } else if (to === 'RECOVERY' || to === 'NORMAL') {
+      this.haltStartTime = null;
+    }
+
     await this.logAudit('CIRCUIT_BREAKER_TRANSITION', { from, to, reason });
+  }
+
+  /**
+   * Phase A: Auto-recover from HALT after 60 minutes
+   */
+  private async checkHaltTimeout(): Promise<void> {
+    if (this.circuitBreakerState !== 'HALT' || !this.haltStartTime) return;
+    const elapsedMs = Date.now() - this.haltStartTime;
+    if (elapsedMs > this.HALT_TIMEOUT_MS) {
+      await this.transitionToState('RECOVERY',
+        `Auto-recovery: HALT timeout after ${(elapsedMs / 1000 / 60).toFixed(1)} min`);
+    }
+  }
+
+  /**
+   * Phase A: Enforce tail concentration limits
+   * Uses shared tail-concentration module for calculation
+   */
+  private async checkTailConcentration(positions: PortfolioState['positions']): Promise<boolean> {
+    // Convert to TailPosition format for shared module
+    const tailPositionInputs: TailPosition[] = positions.map(p => ({
+      marketId: p.marketId,
+      size: p.size,
+      currentPrice: p.currentPrice,
+    }));
+
+    // Use shared module for calculation
+    const result = calculateTailConcentration(tailPositionInputs);
+
+    if (result.tailPositions.length === 0) return true;
+
+    // Record snapshot using shared helper
+    const params = createSnapshotParams(result);
+    this.sql.exec(
+      `INSERT INTO tail_concentration_snapshots (snapshot_at, tail_portfolio_size,
+       tail_position_count, tail_herfindahl, tail_max_position_pct, is_compliant)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      params
+    );
+
+    if (!result.isCompliant) {
+      const msg = `Tail Herfindahl ${result.herfindahl.toFixed(3)} > 0.3`;
+      if (this.circuitBreakerState === 'NORMAL') {
+        await this.transitionToState('CAUTION', msg);
+      } else if (this.circuitBreakerState === 'CAUTION') {
+        await this.transitionToState('HALT', msg);
+      }
+    }
+
+    return result.isCompliant;
   }
 }

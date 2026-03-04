@@ -41,7 +41,7 @@ const createBaseRequest = (overrides: Partial<RiskCheckRequest> = {}): RiskCheck
   price: 50,
   strategy: 'test-strategy',
   marketPrice: 0.50,
-  spread: 0.02,
+  spread: 0.002, // 0.2% - within 0.5% default limit
   volume24h: 10000,
   vpinScore: 0.3,
   ambiguityScore: 0.2,
@@ -215,14 +215,14 @@ describe('Risk Invariants (17 Checks)', () => {
 
   describe('I8: Min Market Liquidity', () => {
     it('passes with sufficient liquidity', () => {
-      const request = createBaseRequest({ volume24h: 10000 }); // > $5000
+      const request = createBaseRequest({ volume24h: 1000 }); // >= $500 minimum
       const result = checkMinLiquidity(request, DEFAULT_LIMITS);
       expect(result.passed).toBe(true);
       expect(result.severity).toBe('warning');
     });
 
     it('fails with low liquidity', () => {
-      const request = createBaseRequest({ volume24h: 3000 }); // < $5000
+      const request = createBaseRequest({ volume24h: 200 }); // < $500 minimum
       const result = checkMinLiquidity(request, DEFAULT_LIMITS);
       expect(result.passed).toBe(false);
     });
@@ -230,13 +230,13 @@ describe('Risk Invariants (17 Checks)', () => {
 
   describe('I9: Max VPIN Toxicity', () => {
     it('passes with low VPIN', () => {
-      const request = createBaseRequest({ vpinScore: 0.4 }); // < 0.6
+      const request = createBaseRequest({ vpinScore: 0.3 }); // <= 0.5 limit
       const result = checkMaxVpin(request, DEFAULT_LIMITS);
       expect(result.passed).toBe(true);
     });
 
     it('fails with high VPIN', () => {
-      const request = createBaseRequest({ vpinScore: 0.7 }); // > 0.6
+      const request = createBaseRequest({ vpinScore: 0.7 }); // > 0.5 limit
       const result = checkMaxVpin(request, DEFAULT_LIMITS);
       expect(result.passed).toBe(false);
       expect(result.message).toContain('toxic');
@@ -251,13 +251,13 @@ describe('Risk Invariants (17 Checks)', () => {
 
   describe('I10: Max Spread', () => {
     it('passes with tight spread', () => {
-      const request = createBaseRequest({ spread: 0.05 }); // 5% < 10%
+      const request = createBaseRequest({ spread: 0.002 }); // 0.2% <= 0.5% limit
       const result = checkMaxSpread(request, DEFAULT_LIMITS);
       expect(result.passed).toBe(true);
     });
 
     it('fails with wide spread', () => {
-      const request = createBaseRequest({ spread: 0.15 }); // 15% > 10%
+      const request = createBaseRequest({ spread: 0.01 }); // 1% > 0.5% limit
       const result = checkMaxSpread(request, DEFAULT_LIMITS);
       expect(result.passed).toBe(false);
     });
@@ -400,10 +400,11 @@ describe('Risk Invariants (17 Checks)', () => {
   });
 
   describe('runAllInvariantChecks', () => {
-    it('runs all 17 invariants', () => {
+    it('runs all 18 invariants', () => {
       const request = createBaseRequest();
       const results = runAllInvariantChecks(request);
-      expect(results.length).toBe(17);
+      // 17 original + I18 (slippage kill switch)
+      expect(results.length).toBe(18);
     });
 
     it('all pass for valid request', () => {
@@ -425,14 +426,17 @@ describe('Risk Invariants (17 Checks)', () => {
   describe('getFailedInvariants', () => {
     it('returns only failed invariants', () => {
       const request = createBaseRequest({
-        size: 600, // Exceeds 5%
-        volume24h: 3000, // Below $5000
+        size: 600, // Exceeds 5% limit
+        volume24h: 300, // Below $500 liquidity minimum
       });
       const results = runAllInvariantChecks(request);
       const failures = getFailedInvariants(results);
 
+      // All failures should have passed=false
       expect(failures.every(r => !r.passed)).toBe(true);
+      // Should include position size failure
       expect(failures.some(r => r.id === 'I1_MAX_POSITION_SIZE')).toBe(true);
+      // Should include liquidity failure
       expect(failures.some(r => r.id === 'I8_MIN_MARKET_LIQUIDITY')).toBe(true);
     });
   });
@@ -455,14 +459,18 @@ describe('Risk Invariants (17 Checks)', () => {
   describe('getWarnings', () => {
     it('returns only warnings', () => {
       const request = createBaseRequest({
-        volume24h: 3000, // Below $5000 - warning
-        vpinScore: 0.7, // High VPIN - warning
+        volume24h: 300, // Below $500 minimum liquidity - warning
+        vpinScore: 0.7, // Above 0.5 VPIN limit - warning
       });
       const results = runAllInvariantChecks(request);
       const warnings = getWarnings(results);
 
+      // All warnings should have severity='warning' and passed=false
       expect(warnings.every(r => r.severity === 'warning')).toBe(true);
+      expect(warnings.every(r => !r.passed)).toBe(true);
+      // Should include liquidity warning
       expect(warnings.some(r => r.id === 'I8_MIN_MARKET_LIQUIDITY')).toBe(true);
+      // Should include VPIN toxicity warning
       expect(warnings.some(r => r.id === 'I9_MAX_VPIN_TOXICITY')).toBe(true);
     });
   });

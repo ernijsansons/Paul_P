@@ -11,7 +11,6 @@ import { Result, Ok, Err } from '../../types/env';
 import type {
   GammaMarket,
   GammaEvent,
-  GammaMarketsResponse,
   GammaEventsResponse,
   NormalizedMarket,
 } from './types';
@@ -45,12 +44,14 @@ async function fetchWithEvidence<T>(
   }
 
   try {
+    console.log(`[GammaAPI] Fetching ${url.toString()}`);
     const response = await fetch(url.toString(), {
       headers: {
         'Accept': 'application/json',
         'User-Agent': 'Paul-P/1.0',
       },
     });
+    console.log(`[GammaAPI] Response status: ${response.status}`);
 
     if (!response.ok) {
       return Err(
@@ -88,6 +89,7 @@ async function fetchWithEvidence<T>(
 
 /**
  * Fetch all markets from Gamma API
+ * Note: Gamma API returns a flat array, not a wrapped response object
  */
 export async function fetchMarkets(
   env: Env,
@@ -109,7 +111,8 @@ export async function fetchMarkets(
     params['active'] = String(options.active);
   }
 
-  const result = await fetchWithEvidence<GammaMarketsResponse>(env, {
+  // Gamma API returns a flat array of markets, not a wrapped response
+  const result = await fetchWithEvidence<GammaMarket[]>(env, {
     endpoint: '/markets',
     params,
   });
@@ -118,10 +121,11 @@ export async function fetchMarkets(
     return Err(result.error);
   }
 
+  // The response is a flat array - no cursor pagination in Gamma API
   return Ok({
-    markets: result.value.data.data,
+    markets: result.value.data,
     evidenceHash: result.value.evidenceHash,
-    nextCursor: result.value.data.next_cursor,
+    nextCursor: undefined, // Gamma API doesn't use cursor pagination for /markets
   });
 }
 
@@ -204,14 +208,15 @@ export async function fetchEvent(
 
 /**
  * Normalize a Gamma market to internal representation
+ * Note: Gamma API uses camelCase field names
  */
 export function normalizeGammaMarket(market: GammaMarket, evidenceHash: string): NormalizedMarket {
-  // Parse outcome prices
+  // Parse outcome prices - API returns JSON stringified array
   let yesPrice = 0.5;
   let noPrice = 0.5;
 
   try {
-    const prices = JSON.parse(market.outcome_prices) as string[];
+    const prices = JSON.parse(market.outcomePrices) as string[];
     if (prices.length >= 2) {
       yesPrice = parseFloat(prices[0] ?? '0.5');
       noPrice = parseFloat(prices[1] ?? '0.5');
@@ -220,40 +225,44 @@ export function normalizeGammaMarket(market: GammaMarket, evidenceHash: string):
     // Default to 50/50 if parsing fails
   }
 
-  // Find resolution outcome from tokens
+  // Find resolution outcome from tokens (if available)
   let resolutionOutcome: 'YES' | 'NO' | 'VOID' | undefined;
-  if (market.resolved) {
+  const isResolved = market.archived ?? false;
+  if (isResolved && market.tokens) {
     const winningToken = market.tokens.find((t) => t.winner);
     if (winningToken) {
       resolutionOutcome = winningToken.outcome.toUpperCase() === 'YES' ? 'YES' : 'NO';
     }
   }
 
+  // API uses camelCase: conditionId, endDate, resolutionSource, etc.
   return {
-    conditionId: market.condition_id,
+    conditionId: market.conditionId,
     question: market.question,
-    description: market.description,
-    resolutionSource: market.resolution_source,
+    description: market.description ?? '',
+    resolutionSource: market.resolutionSource ?? market.resolution_source ?? '',
     resolutionCriteria: market.resolution_criteria ?? '',
-    endDate: market.end_date_iso,
+    endDate: market.endDateIso ?? market.endDate ?? '',
 
     isActive: market.active,
     isClosed: market.closed,
-    isResolved: market.resolved,
+    isResolved,
     resolutionOutcome,
 
     yesPrice,
     noPrice,
     midPrice: (yesPrice + (1 - noPrice)) / 2,
-    spread: yesPrice - (1 - noPrice),
+    // Spread must be clamped to [0, 1] for D1 CHECK constraint
+    // Formula: yesPrice - (1 - noPrice) can be negative when prices are at extremes
+    spread: Math.max(0, Math.min(1, Math.abs(yesPrice - (1 - noPrice)))),
 
-    volumeUsd: parseFloat(market.volume) || 0,
-    volume24hUsd: parseFloat(market.volume_24h) || 0,
-    liquidityUsd: parseFloat(market.liquidity) || 0,
+    volumeUsd: market.volumeNum ?? (parseFloat(market.volume) || 0),
+    volume24hUsd: market.volume24hr ?? 0,
+    liquidityUsd: market.liquidityNum ?? (parseFloat(market.liquidity) || 0),
 
     category: market.category,
     tags: market.tags ?? [],
-    series: market.series,
+    series: market.slug,
 
     evidenceHash,
     fetchedAt: new Date().toISOString(),

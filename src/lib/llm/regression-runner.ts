@@ -12,6 +12,7 @@ import type { Env } from '../../types/env';
 import { asResearchEnv } from '../../types/env';
 import { runLLMScoring, type LLMScoringRunType, type LLMScoringRun } from '../research/llm-governance';
 import { deterministicId } from '../utils/deterministic-id';
+import { getPrimaryGoldCorpus } from './gold-corpus';
 
 // ============================================================
 // Types
@@ -110,23 +111,33 @@ export interface DriftReport {
 
 /**
  * Initial gold corpus with test cases across all categories.
- * In production, this would be stored in D1 or R2.
+ * Uses the new high-quality gold corpus from gold-corpus.ts
+ */
+/**
+ * Build complete gold corpus for regression testing
  */
 export function getGoldCorpus(): GoldTestCase[] {
+  // Primary gold corpus is imported directly into the function return below
+  const primaryCorpus = getPrimaryGoldCorpus();
+
+  // Combine with generated cases for comprehensive coverage
   return [
-    // === Standard Resolution (20 cases) ===
+    // Primary gold corpus (20 high-quality cases)
+    ...primaryCorpus,
+
+    // === Additional Standard Resolution (generated) ===
     ...standardResolutionCases(),
 
-    // === Edge Cases (10 cases) ===
+    // === Additional Edge Cases (generated) ===
     ...edgeCaseCases(),
 
-    // === Disputed Markets (10 cases) ===
+    // === Disputed Markets (generated) ===
     ...disputedMarketCases(),
 
-    // === Ambiguous Phrasing (5 cases) ===
+    // === Ambiguous Phrasing (generated) ===
     ...ambiguousPhrasingCases(),
 
-    // === Adversarial Tests (5 cases) ===
+    // === Adversarial Tests (generated) ===
     ...adversarialCases(),
   ];
 }

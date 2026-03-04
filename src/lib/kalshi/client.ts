@@ -51,7 +51,9 @@ async function fetchWithEvidence<T>(
   env: Env,
   options: FetchOptions
 ): Promise<Result<{ data: T; evidenceHash: string }, Error>> {
-  const url = new URL(options.endpoint, KALSHI_API_BASE);
+  // Note: URL constructor treats paths starting with '/' as absolute from origin
+  // So we concatenate the base URL with the endpoint directly
+  const url = new URL(KALSHI_API_BASE + options.endpoint);
   const method = options.method ?? 'GET';
 
   if (options.params) {
@@ -428,44 +430,46 @@ export async function getBalance(
 
 /**
  * Normalize a Kalshi market to internal representation
+ * Note: Some fields may be missing from API response - handle with defaults
  */
 export function normalizeKalshiMarket(market: KalshiMarket, evidenceHash: string): NormalizedKalshiMarket {
-  // Kalshi prices are in cents (1-99)
-  const yesBid = market.yes_bid / 100;
-  const yesAsk = market.yes_ask / 100;
-  const noBid = market.no_bid / 100;
-  const noAsk = market.no_ask / 100;
+  // Kalshi prices are in cents (1-99) - handle missing values
+  const yesBid = (market.yes_bid ?? 0) / 100;
+  const yesAsk = (market.yes_ask ?? 100) / 100;
+  const noBid = (market.no_bid ?? 0) / 100;
+  const noAsk = (market.no_ask ?? 100) / 100;
 
   const midPrice = (yesBid + yesAsk) / 2;
-  const spread = yesAsk - yesBid;
+  const spread = Math.max(0, Math.min(1, yesAsk - yesBid));
 
   return {
     ticker: market.ticker,
-    eventTicker: market.event_ticker,
-    title: market.title,
-    rulesText: market.rules_primary + (market.rules_secondary ? '\n' + market.rules_secondary : ''),
+    eventTicker: market.event_ticker ?? '',
+    title: market.title ?? '',
+    rulesText: (market.rules_primary ?? '') + (market.rules_secondary ? '\n' + market.rules_secondary : ''),
 
-    status: market.status,
+    status: market.status ?? 'active',
     result: market.result ? (market.result.toUpperCase() as 'YES' | 'NO') : undefined,
 
     yesBid,
     yesAsk,
     noBid,
     noAsk,
-    lastPrice: market.last_price / 100,
+    lastPrice: (market.last_price ?? 0) / 100,
 
     midPrice,
     spread,
 
-    volume24h: market.volume_24h,
-    dollarVolume24h: market.dollar_volume_24h,
-    openInterest: market.open_interest,
+    volume24h: market.volume_24h ?? 0,
+    dollarVolume24h: market.dollar_volume_24h ?? 0,
+    openInterest: market.open_interest ?? 0,
 
-    closeTime: market.close_time,
-    settlementTime: market.settlement_time,
+    closeTime: market.close_time ?? '',
+    settlementTime: market.settlement_time ?? market.close_time ?? '',
 
-    category: market.category,
-    seriesTicker: market.series_ticker,
+    // These fields may be missing from some market types
+    category: market.category ?? 'unknown',
+    seriesTicker: market.series_ticker ?? '',
 
     evidenceHash,
     fetchedAt: new Date().toISOString(),
@@ -504,4 +508,96 @@ export async function fetchAllActiveMarkets(
   }
 
   return Ok({ markets, evidenceHashes });
+}
+
+// ============================================================
+// HISTORICAL ENDPOINTS (Public, for settled markets)
+// ============================================================
+
+/**
+ * Get historical cutoff timestamps
+ * Markets settled before these timestamps are in the historical tier
+ */
+export async function getHistoricalCutoff(
+  env: Env
+): Promise<Result<{ marketSettledTs: string; ordersUpdatedTs: string; tradesCreatedTs: string; evidenceHash: string }, Error>> {
+  const result = await fetchWithEvidence<{
+    market_settled_ts: string;
+    orders_updated_ts: string;
+    trades_created_ts: string;
+  }>(env, {
+    endpoint: '/historical/cutoff',
+  });
+
+  if (!result.ok) return Err(result.error);
+
+  return Ok({
+    marketSettledTs: result.value.data.market_settled_ts,
+    ordersUpdatedTs: result.value.data.orders_updated_ts,
+    tradesCreatedTs: result.value.data.trades_created_ts,
+    evidenceHash: result.value.evidenceHash,
+  });
+}
+
+/**
+ * Fetch historical (settled) markets
+ * Note: Only contains recent data (approximately last week)
+ */
+export async function fetchHistoricalMarkets(
+  env: Env,
+  options?: {
+    limit?: number;
+    cursor?: string;
+    seriesTicker?: string;
+  }
+): Promise<Result<{ markets: KalshiMarket[]; evidenceHash: string; cursor?: string }, Error>> {
+  const params: Record<string, string> = {};
+
+  if (options?.limit) params['limit'] = String(options.limit);
+  if (options?.cursor) params['cursor'] = options.cursor;
+  if (options?.seriesTicker) params['series_ticker'] = options.seriesTicker;
+
+  const result = await fetchWithEvidence<KalshiMarketsResponse>(env, {
+    endpoint: '/historical/markets',
+    params,
+  });
+
+  if (!result.ok) return Err(result.error);
+
+  return Ok({
+    markets: result.value.data.markets,
+    evidenceHash: result.value.evidenceHash,
+    cursor: result.value.data.cursor ?? undefined,
+  });
+}
+
+/**
+ * Fetch historical candlesticks for a settled market
+ */
+export async function fetchHistoricalCandlesticks(
+  env: Env,
+  ticker: string,
+  options: {
+    periodInterval: number; // in minutes
+    startTs: number; // Unix timestamp
+    endTs?: number; // Unix timestamp
+  }
+): Promise<Result<{ candlesticks: KalshiCandlestick[]; evidenceHash: string }, Error>> {
+  const params: Record<string, string> = {
+    period_interval: String(options.periodInterval),
+    start_ts: String(options.startTs),
+  };
+  if (options.endTs) params['end_ts'] = String(options.endTs);
+
+  const result = await fetchWithEvidence<KalshiCandlesticksResponse>(env, {
+    endpoint: `/historical/markets/${ticker}/candlesticks`,
+    params,
+  });
+
+  if (!result.ok) return Err(result.error);
+
+  return Ok({
+    candlesticks: result.value.data.candlesticks,
+    evidenceHash: result.value.evidenceHash,
+  });
 }

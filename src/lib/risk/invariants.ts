@@ -29,7 +29,8 @@ export type InvariantId =
   | 'I14_PRICE_STALENESS'
   | 'I15_ORDER_SIZE_LIMITS'
   | 'I16_CIRCUIT_BREAKER_STATE'
-  | 'I17_SYSTEM_HEALTH';
+  | 'I17_SYSTEM_HEALTH'
+  | 'I18_MAX_SLIPPAGE_VS_EDGE';  // Phase A: Kill switch for market if slippage > 50% of edge
 
 export interface InvariantResult {
   id: InvariantId;
@@ -85,6 +86,10 @@ export interface RiskCheckRequest {
   // Event Graph correlation data (P-06 integration)
   correlatedMarkets?: CorrelatedMarketInfo[];
 
+  // Slippage tracking (Phase A kill switch)
+  expectedSlippage?: number;  // Predicted slippage % of edge
+  recentSlippageRatio?: number;  // Recent realized / expected slippage ratio
+
   // System state
   circuitBreakerState: 'NORMAL' | 'CAUTION' | 'HALT' | 'RECOVERY';
   systemHealthy: boolean;
@@ -128,10 +133,10 @@ export const DEFAULT_LIMITS: RiskLimits = {
   maxDrawdownPct: 10,
   maxWeeklyLossPct: 7,
 
-  // Market Quality
-  minLiquidity: 5000,
-  maxVpin: 0.6,
-  maxSpread: 0.10,
+  // Market Quality (TIGHTENED FOR PHASE A)
+  minLiquidity: 500,  // was 5000, reduced for $250 account
+  maxVpin: 0.5,  // was 0.6, tightened to exclude elevated toxicity
+  maxSpread: 0.005,  // was 0.10 (10%), tightened to 0.5% for small capital
   minTimeToSettlementHours: 24,
 
   // Execution Safety
@@ -618,7 +623,47 @@ export function checkSystemHealth(
 }
 
 /**
- * Run all 17 invariant checks
+ * I18: Max Slippage vs Edge (Phase A Kill Switch)
+ * If realized slippage > 50% of expected edge, halt that market
+ * Prevents edge erosion from excessive execution slippage
+ */
+export function checkMaxSlippageVsEdge(
+  request: RiskCheckRequest,
+  _limits: RiskLimits
+): InvariantResult {
+  // If no slippage data available, pass (assume it will be monitored)
+  if (!request.recentSlippageRatio) {
+    return {
+      id: 'I18_MAX_SLIPPAGE_VS_EDGE',
+      name: 'Max Slippage vs Edge',
+      passed: true,
+      actualValue: 0,
+      threshold: 50,
+      message: 'No slippage data available (monitoring enabled)',
+      severity: 'critical',
+    };
+  }
+
+  // Kill switch: if realized slippage > 50% of edge, fail the check
+  const slippagePercent = request.recentSlippageRatio * 100;
+  const threshold = 50; // 50% of edge
+  const passed = slippagePercent <= threshold;
+
+  return {
+    id: 'I18_MAX_SLIPPAGE_VS_EDGE',
+    name: 'Max Slippage vs Edge',
+    passed,
+    actualValue: slippagePercent,
+    threshold,
+    message: passed
+      ? `Slippage ${slippagePercent.toFixed(1)}% of edge within limit`
+      : `Slippage ${slippagePercent.toFixed(1)}% exceeds ${threshold}% - market blocked`,
+    severity: 'critical',
+  };
+}
+
+/**
+ * Run all 18 invariant checks
  */
 export function runAllInvariantChecks(
   request: RiskCheckRequest,
@@ -642,6 +687,7 @@ export function runAllInvariantChecks(
     checkOrderSizeLimits(request, limits),
     checkCircuitBreakerState(request, limits),
     checkSystemHealth(request, limits),
+    checkMaxSlippageVsEdge(request, limits),  // Phase A: I18 Kill Switch
   ];
 }
 

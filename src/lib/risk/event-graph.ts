@@ -17,6 +17,16 @@ export interface CorrelatedMarket {
 }
 
 /**
+ * Result of a correlation lookup - fail-closed pattern
+ */
+export interface CorrelationLookupResult {
+  success: boolean;
+  correlatedMarkets: CorrelatedMarket[];
+  error?: string;
+  errorCode?: 'DB_ERROR' | 'PARSE_ERROR' | 'TIMEOUT';
+}
+
+/**
  * Portfolio exposure including correlated markets
  */
 export interface CorrelatedExposure {
@@ -32,15 +42,19 @@ export interface CorrelatedExposure {
 }
 
 /**
- * Get markets correlated to a target market from the Event Graph
+ * Get markets correlated to a target market from the Event Graph (FAIL-CLOSED)
  *
  * Uses both direct edges and cached correlation scores.
- * Falls back gracefully if Event Graph data is unavailable.
+ * Returns a result object with success flag - callers MUST check success before using data.
+ *
+ * FAIL-CLOSED BEHAVIOR: If lookup fails, success=false is returned.
+ * Callers should BLOCK execution when success=false to prevent
+ * undetected correlation risk from accumulating.
  */
-export async function getCorrelatedMarkets(
+export async function getCorrelatedMarketsWithStatus(
   env: Env,
   targetMarketId: string
-): Promise<CorrelatedMarket[]> {
+): Promise<CorrelationLookupResult> {
   const correlated: CorrelatedMarket[] = [];
 
   try {
@@ -186,28 +200,77 @@ export async function getCorrelatedMarkets(
     }
 
   } catch (error) {
-    // Fail gracefully - if Event Graph is unavailable, return empty
-    console.warn('Event Graph query failed, returning no correlations:', error);
-    return [];
+    // FAIL-CLOSED: Return explicit failure status
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('Event Graph query failed (FAIL-CLOSED):', errorMessage);
+    return {
+      success: false,
+      correlatedMarkets: [],
+      error: `Event Graph lookup failed: ${errorMessage}`,
+      errorCode: 'DB_ERROR',
+    };
   }
 
-  return correlated;
+  return {
+    success: true,
+    correlatedMarkets: correlated,
+  };
 }
 
 /**
- * Compute total correlated exposure for a market
+ * Legacy wrapper for backward compatibility
+ * @deprecated Use getCorrelatedMarketsWithStatus for fail-closed behavior
+ */
+export async function getCorrelatedMarkets(
+  env: Env,
+  targetMarketId: string
+): Promise<CorrelatedMarket[]> {
+  const result = await getCorrelatedMarketsWithStatus(env, targetMarketId);
+  if (!result.success) {
+    // Legacy behavior: log warning and return empty
+    // WARNING: This is fail-open! Use getCorrelatedMarketsWithStatus instead.
+    console.warn('[DEPRECATED] getCorrelatedMarkets called - this is fail-open behavior');
+    return [];
+  }
+  return result.correlatedMarkets;
+}
+
+/**
+ * Result of correlated exposure computation - fail-closed
+ */
+export interface CorrelatedExposureResult {
+  success: boolean;
+  exposure: CorrelatedExposure | null;
+  error?: string;
+}
+
+/**
+ * Compute total correlated exposure for a market (FAIL-CLOSED)
  *
  * This is used by I3 (Max Market Exposure) invariant to compute
  * total effective exposure including correlated markets.
+ *
+ * FAIL-CLOSED: If correlation lookup fails, returns success=false.
+ * Callers MUST check success and BLOCK execution if false.
  */
-export async function computeCorrelatedExposure(
+export async function computeCorrelatedExposureWithStatus(
   env: Env,
   targetMarketId: string,
   targetSize: number,
   existingPositions: Array<{ marketId: string; size: number }>
-): Promise<CorrelatedExposure> {
-  // Get correlated markets
-  const correlatedMarkets = await getCorrelatedMarkets(env, targetMarketId);
+): Promise<CorrelatedExposureResult> {
+  // Get correlated markets with status
+  const lookupResult = await getCorrelatedMarketsWithStatus(env, targetMarketId);
+
+  if (!lookupResult.success) {
+    return {
+      success: false,
+      exposure: null,
+      error: lookupResult.error,
+    };
+  }
+
+  const correlatedMarkets = lookupResult.correlatedMarkets;
 
   // Compute direct exposure (existing + new position)
   const existingTargetPosition = existingPositions.find(p => p.marketId === targetMarketId);
@@ -233,11 +296,46 @@ export async function computeCorrelatedExposure(
   }
 
   return {
-    directExposure: Math.abs(directExposure),
-    correlatedExposure,
-    totalEffectiveExposure: Math.abs(directExposure) + correlatedExposure,
-    correlatedMarkets: correlatedDetails,
+    success: true,
+    exposure: {
+      directExposure: Math.abs(directExposure),
+      correlatedExposure,
+      totalEffectiveExposure: Math.abs(directExposure) + correlatedExposure,
+      correlatedMarkets: correlatedDetails,
+    },
   };
+}
+
+/**
+ * Legacy wrapper for backward compatibility
+ * @deprecated Use computeCorrelatedExposureWithStatus for fail-closed behavior
+ */
+export async function computeCorrelatedExposure(
+  env: Env,
+  targetMarketId: string,
+  targetSize: number,
+  existingPositions: Array<{ marketId: string; size: number }>
+): Promise<CorrelatedExposure> {
+  const result = await computeCorrelatedExposureWithStatus(
+    env,
+    targetMarketId,
+    targetSize,
+    existingPositions
+  );
+
+  if (!result.success || !result.exposure) {
+    // Legacy behavior: return zero exposure on failure
+    // WARNING: This is fail-open! Use computeCorrelatedExposureWithStatus instead.
+    console.warn('[DEPRECATED] computeCorrelatedExposure called - this is fail-open behavior');
+    return {
+      directExposure: Math.abs(targetSize),
+      correlatedExposure: 0,
+      totalEffectiveExposure: Math.abs(targetSize),
+      correlatedMarkets: [],
+    };
+  }
+
+  return result.exposure;
 }
 
 /**

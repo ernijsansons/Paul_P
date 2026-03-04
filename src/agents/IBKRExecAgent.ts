@@ -82,6 +82,7 @@ export class IBKRExecAgent extends PaulPAgent {
   readonly agentName = 'ibkr-exec';
 
   private executionMode: ExecutionMode = 'PAPER';
+  private modeLoaded = false;
   private gatewayUrl: string = '';
   private accountId: string = '';
   private isConnected = false;
@@ -160,7 +161,59 @@ export class IBKRExecAgent extends PaulPAgent {
     this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_ibkr_orders_created ON ibkr_orders(created_at)`);
   }
 
+  /**
+   * Load execution mode from D1 strategy_execution_mode table.
+   * Called on first request to ensure mode persists across DO restarts.
+   */
+  private async loadExecutionMode(): Promise<void> {
+    try {
+      // Query D1 for persisted mode (bonding or weather strategy)
+      const result = await this.env.DB.prepare(`
+        SELECT mode FROM strategy_execution_mode
+        WHERE strategy IN ('bonding', 'weather')
+        ORDER BY changed_at DESC
+        LIMIT 1
+      `).first<{ mode: string }>();
+
+      if (result?.mode && ['PAPER', 'LIVE', 'DISABLED'].includes(result.mode)) {
+        const newMode = result.mode as ExecutionMode;
+        if (newMode !== this.executionMode) {
+          const previousMode = this.executionMode;
+          this.executionMode = newMode;
+          await this.logAudit('IBKR_EXECUTION_MODE_LOADED', {
+            previousMode,
+            loadedMode: newMode,
+            source: 'D1',
+          });
+        }
+      }
+    } catch (error) {
+      // Fail safe to PAPER mode - log the error but don't crash
+      await this.logAudit('IBKR_EXECUTION_MODE_LOAD_FAILED', {
+        error: String(error),
+        fallbackMode: 'PAPER',
+      });
+    }
+  }
+
+  /**
+   * Reload execution mode from D1 (called via /mode/reload endpoint).
+   */
+  private async reloadExecutionMode(): Promise<Response> {
+    await this.loadExecutionMode();
+    return Response.json({
+      success: true,
+      mode: this.executionMode,
+    });
+  }
+
   protected async handleRequest(request: Request, path: string): Promise<Response> {
+    // Load execution mode from D1 on first request
+    if (!this.modeLoaded) {
+      await this.loadExecutionMode();
+      this.modeLoaded = true;
+    }
+
     switch (path) {
       case '/connect':
         return this.connect();
@@ -194,6 +247,8 @@ export class IBKRExecAgent extends PaulPAgent {
         return this.getExecutionMode();
       case '/mode/set':
         return this.setExecutionMode(request);
+      case '/mode/reload':
+        return this.reloadExecutionMode();
       case '/status':
         return this.getStatus();
       default:
@@ -986,7 +1041,8 @@ export class IBKRExecAgent extends PaulPAgent {
   }
 
   private async setExecutionMode(request: Request): Promise<Response> {
-    const { mode } = await request.json<{ mode: ExecutionMode }>();
+    const body = await request.json<{ mode: ExecutionMode; strategy?: string; persist?: boolean }>();
+    const { mode, strategy, persist = true } = body;
 
     if (!['PAPER', 'LIVE', 'DISABLED'].includes(mode)) {
       return Response.json({ error: 'Invalid mode' }, { status: 400 });
@@ -995,12 +1051,40 @@ export class IBKRExecAgent extends PaulPAgent {
     const previousMode = this.executionMode;
     this.executionMode = mode;
 
-    await this.logAudit('IBKR_MODE_CHANGED', { previousMode, newMode: mode });
+    // Persist to D1 if requested (default: true) and strategy specified
+    if (persist && strategy) {
+      try {
+        await this.env.DB.prepare(`
+          INSERT INTO strategy_execution_mode (strategy, mode, changed_at, changed_by, reason)
+          VALUES (?, ?, datetime('now'), 'IBKRExecAgent', 'Mode set via API')
+          ON CONFLICT(strategy) DO UPDATE SET
+            mode = excluded.mode,
+            changed_at = excluded.changed_at,
+            changed_by = excluded.changed_by,
+            reason = excluded.reason
+        `).bind(strategy, mode).run();
+      } catch (error) {
+        // Log but don't fail the mode change
+        await this.logAudit('IBKR_MODE_PERSIST_FAILED', {
+          error: String(error),
+          strategy,
+          mode,
+        });
+      }
+    }
+
+    await this.logAudit('IBKR_MODE_CHANGED', {
+      previousMode,
+      newMode: mode,
+      strategy: strategy ?? 'none',
+      persisted: persist && !!strategy,
+    });
 
     return Response.json({
       success: true,
       previousMode,
       newMode: mode,
+      persisted: persist && !!strategy,
     });
   }
 

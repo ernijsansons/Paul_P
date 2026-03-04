@@ -42,6 +42,10 @@
 #    wrangler secret put ADMIN_ALLOWED_EMAILS
 #    wrangler secret put ADMIN_ALLOWED_IPS
 #    wrangler secret put ADMIN_TURNSTILE_SECRET
+#
+#    CF Access JWT validation (for defense-in-depth):
+#    wrangler secret put CF_ACCESS_TEAM_DOMAIN  (e.g., yourteam.cloudflareaccess.com)
+#    wrangler secret put CF_ACCESS_AUDIENCE     (Application AUD from CF Access dashboard)
 # ============================================================
 
 name = "paul-p"

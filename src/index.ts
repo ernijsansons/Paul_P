@@ -14,6 +14,8 @@ import type { Env } from './types/env';
 import { adminRoutes } from './routes/admin';
 import { healthRoutes } from './routes/health';
 import { webhookRoutes } from './routes/webhooks';
+import { dashboardRoutes } from './routes/dashboard';
+import { executionRoutes } from './routes/execution';
 
 // Import queue consumers
 import { handleIngestionQueue } from './queue/ingestion-consumer';
@@ -64,6 +66,8 @@ app.get('/', (c) => {
 app.route('/health', healthRoutes);
 app.route('/admin', adminRoutes);
 app.route('/webhooks', webhookRoutes);
+app.route('/dashboard', dashboardRoutes);
+app.route('/exec', executionRoutes);
 
 // Error handling
 app.onError((err, c) => {

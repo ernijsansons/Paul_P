@@ -57,6 +57,12 @@ export interface OrderValidationResult {
   adjustedOrder?: KalshiOrderRequest;
 }
 
+export type LimitPriceMethod =
+  | 'mid_minus_edge'
+  | 'best_bid_improve'
+  | 'model_fair_value'
+  | 'aggressive_cross';
+
 export interface ExecutionRequest {
   orderId: string;
   signal: {
@@ -69,6 +75,7 @@ export interface ExecutionRequest {
   };
   requestedSize: number;
   maxPrice: number; // Maximum price willing to pay (cents)
+  limitPriceMethod?: LimitPriceMethod; // Dynamic limit price method
   orderType: 'limit' | 'market';
   timeInForce?: 'day' | 'gtc' | 'ioc';
   source: string; // Strategy that generated this signal
@@ -208,11 +215,12 @@ export function validateExecutionRequest(
   }
 
   // 4. Check allowed categories
+  const marketCategory = market.category ?? 'unknown';
   if (
     policy.allowedMarketCategories.length > 0 &&
-    !policy.allowedMarketCategories.includes(market.category)
+    !policy.allowedMarketCategories.includes(marketCategory)
   ) {
-    errors.push(`Category ${market.category} not in allowed list`);
+    errors.push(`Category ${marketCategory} not in allowed list`);
   }
 
   // 5. Check order size
@@ -270,17 +278,18 @@ export function validateExecutionRequest(
   }
 
   // 11. Check market liquidity (warnings only)
-  const spread = market.yes_ask - market.yes_bid;
+  const spread = (market.yes_ask ?? 0) - (market.yes_bid ?? 0);
   if (spread > 10) {
     warnings.push(`Wide spread: ${spread} cents`);
   }
 
-  if (market.volume_24h < 100) {
-    warnings.push(`Low volume: ${market.volume_24h} contracts in 24h`);
+  if ((market.volume_24h ?? 0) < 100) {
+    warnings.push(`Low volume: ${market.volume_24h ?? 0} contracts in 24h`);
   }
 
   // 12. Check time to settlement
-  const settlementTime = new Date(market.settlement_time).getTime();
+  const settlementTimeStr = market.settlement_time ?? market.close_time ?? new Date().toISOString();
+  const settlementTime = new Date(settlementTimeStr).getTime();
   const hoursToSettlement = (settlementTime - now) / (1000 * 60 * 60);
   if (hoursToSettlement < 1) {
     warnings.push(`Market settles in ${hoursToSettlement.toFixed(1)} hours`);
@@ -336,14 +345,163 @@ export function checkTradingHours(hours: TradingHours): {
   return { allowed: true, reason: '' };
 }
 
+// ============================================================
+// DYNAMIC LIMIT PRICE METHODS (Phase B)
+// ============================================================
+
+/**
+ * Compute mid price from bid-ask spread
+ */
+function computeMidPrice(bid: number | undefined, ask: number | undefined): number {
+  const safeBid = bid ?? 50;
+  const safeAsk = ask ?? 50;
+  return (safeBid + safeAsk) / 2;
+}
+
+/**
+ * Method 1: mid_minus_edge
+ * Place limit order at mid price minus half the expected edge
+ * Rationale: Conservative approach; improves over mid by half our edge
+ */
+export function limitPriceMidMinusEdge(
+  marketBid: number | undefined,
+  marketAsk: number | undefined,
+  edgePercent: number, // Expected edge as % (e.g., 2 for 2%)
+  side: 'YES' | 'NO'
+): number {
+  const mid = computeMidPrice(marketBid, marketAsk);
+  const edgeAmount = (mid * edgePercent) / 100;
+  const halfEdge = edgeAmount / 2;
+
+  if (side === 'YES') {
+    // For YES, place below mid to improve entry
+    return Math.max(1, Math.min(99, Math.floor((mid - halfEdge) * 100) / 100));
+  } else {
+    // For NO, place above mid to improve entry
+    return Math.max(1, Math.min(99, Math.ceil((mid + halfEdge) * 100) / 100));
+  }
+}
+
+/**
+ * Method 2: best_bid_improve
+ * Improve best bid by 1 tick (0.01 = 1 cent)
+ * Rationale: Passive entry; try to get filled immediately at 1 tick better
+ */
+export function limitPriceBestBidImprove(
+  marketBid: number | undefined,
+  marketAsk: number | undefined,
+  side: 'YES' | 'NO'
+): number {
+  const TICK = 0.01;
+
+  if (side === 'YES') {
+    // For YES, bid is our entry point; improve by 1 tick
+    const bid = marketBid ?? 50;
+    return Math.max(1, bid + TICK);
+  } else {
+    // For NO, ask is our entry point (reverse); improve by bidding higher
+    const ask = marketAsk ?? 50;
+    return Math.max(1, ask + TICK);
+  }
+}
+
+/**
+ * Method 3: model_fair_value
+ * Place at model-implied fair value based on probability
+ * Rationale: Signal-driven entry; use our model probability as entry price
+ */
+export function limitPriceModelFairValue(
+  modelProbability: number, // 0-1 (e.g., 0.65 for 65%)
+  side: 'YES' | 'NO'
+): number {
+  const fairValue = modelProbability * 100;
+  const bounded = Math.max(1, Math.min(99, fairValue));
+
+  if (side === 'YES') {
+    // For YES, fair value is our limit
+    return Math.floor(bounded * 100) / 100;
+  } else {
+    // For NO, use complement (100 - fairValue)
+    const noFairValue = 100 - fairValue;
+    return Math.max(1, Math.min(99, Math.floor(noFairValue * 100) / 100));
+  }
+}
+
+/**
+ * Method 4: aggressive_cross
+ * Cross the spread when signal strength is high
+ * Rationale: High-conviction entry; pay the spread to get filled fast
+ */
+export function limitPriceAggressiveCross(
+  marketBid: number | undefined,
+  marketAsk: number | undefined,
+  confidence: number, // 0-1 (signal strength)
+  side: 'YES' | 'NO'
+): number {
+  const SPREAD_CROSS_THRESHOLD = 0.7; // Cross at 70%+ confidence
+
+  if (confidence >= SPREAD_CROSS_THRESHOLD) {
+    // High conviction: cross the spread
+    if (side === 'YES') {
+      // For YES, match ask
+      return Math.min(99, (marketAsk ?? 50) + 0.01);
+    } else {
+      // For NO, match bid (which is our ask)
+      return Math.max(1, (marketBid ?? 50) - 0.01);
+    }
+  } else {
+    // Lower conviction: stay passive, use mid
+    return computeMidPrice(marketBid, marketAsk);
+  }
+}
+
+/**
+ * Select dynamic limit price based on method
+ */
+export function selectLimitPrice(
+  method: LimitPriceMethod | undefined,
+  market: KalshiMarket,
+  request: ExecutionRequest
+): number {
+  const side = request.signal.side;
+  const bid = side === 'YES' ? market.yes_bid : market.no_bid;
+  const ask = side === 'YES' ? market.yes_ask : market.no_ask;
+
+  switch (method) {
+    case 'mid_minus_edge':
+      return limitPriceMidMinusEdge(bid, ask, request.signal.edge * 100, side);
+
+    case 'best_bid_improve':
+      return limitPriceBestBidImprove(bid, ask, side);
+
+    case 'model_fair_value':
+      return limitPriceModelFairValue(request.signal.modelProbability, side);
+
+    case 'aggressive_cross':
+      return limitPriceAggressiveCross(bid, ask, request.signal.confidence, side);
+
+    default:
+      // Fallback: use request's max price
+      return Math.min(request.maxPrice, 99);
+  }
+}
+
 /**
  * Transform execution request to Kalshi order format
+ * Now uses dynamic limit price methods instead of static maxPrice
  */
 export function transformToKalshiOrder(
   request: ExecutionRequest,
+  market: KalshiMarket,
   policy: ExecutionPolicy
 ): KalshiOrderRequest {
   const side = request.signal.side.toLowerCase() as 'yes' | 'no';
+
+  // Select limit price using dynamic method or fallback to request.maxPrice
+  const limitPrice =
+    request.limitPriceMethod !== undefined
+      ? selectLimitPrice(request.limitPriceMethod, market, request)
+      : request.maxPrice;
 
   return {
     ticker: request.signal.marketId,
@@ -352,13 +510,13 @@ export function transformToKalshiOrder(
     action: 'buy',
     count: Math.min(request.requestedSize, policy.maxSingleOrderSize),
     type: request.orderType,
-    yes_price: side === 'yes' ? request.maxPrice : undefined,
-    no_price: side === 'no' ? request.maxPrice : undefined,
+    yes_price: side === 'yes' ? limitPrice : undefined,
+    no_price: side === 'no' ? limitPrice : undefined,
   };
 }
 
 /**
- * Simulate a paper trade fill
+ * Simulate a paper trade fill (updated for dynamic limit prices)
  */
 export function simulatePaperFill(
   request: ExecutionRequest,
@@ -367,12 +525,16 @@ export function simulatePaperFill(
 ): PaperFill {
   const side = request.signal.side.toLowerCase() as 'yes' | 'no';
 
-  // Get the relevant ask price
-  const askPrice = side === 'yes' ? market.yes_ask : market.no_ask;
+  // Get the relevant ask price for slippage calculation
+  const askPrice = (side === 'yes' ? market.yes_ask : market.no_ask) ?? 50;
 
-  // Apply slippage (worse price for us)
-  const slippage = policy.paperTradeSlippage;
-  const fillPrice = Math.min(askPrice + slippage, 99);
+  // Calculate actual fill: ask price + simulated slippage (capped at 99)
+  const simulatedSlippage = policy.paperTradeSlippage;
+  const fillPrice = Math.min(askPrice + simulatedSlippage, 99);
+
+  // Slippage is the difference from ask price, not from limit price
+  // This represents the adverse move when filling
+  const actualSlippage = fillPrice - askPrice;
 
   return {
     orderId: request.orderId,
@@ -381,7 +543,7 @@ export function simulatePaperFill(
     action: 'buy',
     count: request.requestedSize,
     fillPrice,
-    slippage,
+    slippage: actualSlippage,
     timestamp: new Date().toISOString(),
   };
 }
